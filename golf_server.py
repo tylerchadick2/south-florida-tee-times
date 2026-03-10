@@ -307,18 +307,27 @@ def _get_driver():
     options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     options.page_load_strategy = "eager"
+
+    def _wrap(driver):
+        try:
+            # Hard cap page load so a single slow site (e.g. Boynton) doesn't hang forever.
+            driver.set_page_load_timeout(25)
+        except Exception:
+            pass
+        return driver
+
     if chrome_bin and chromedriver_path:
         from selenium.webdriver.chrome.service import Service
         options.binary_location = chrome_bin
         service = Service(chromedriver_path)
-        return webdriver.Chrome(service=service, options=options)
+        return _wrap(webdriver.Chrome(service=service, options=options))
     try:
         from webdriver_manager.chrome import ChromeDriverManager
         from selenium.webdriver.chrome.service import Service
         service = Service(ChromeDriverManager().install())
-        return webdriver.Chrome(service=service, options=options)
+        return _wrap(webdriver.Chrome(service=service, options=options))
     except Exception:
-        return webdriver.Chrome(options=options)
+        return _wrap(webdriver.Chrome(options=options))
 
 
 CHRONOGOLF_SLOT_SELECTORS = [
@@ -2224,11 +2233,7 @@ def get_all_teetimes():
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
-        if direct_courses:
-            def direct_done(cid, res):
-                with lock:
-                    results[cid] = res
-            fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
+        # Run Chronogolf first so those courses return quickly even if a direct site is slow.
         r = fetch_all_chronogolf(chrono_courses, date_str, players)
         if before_time:
             for cid, res in r.items():
@@ -2236,6 +2241,12 @@ def get_all_teetimes():
                     res["times"] = apply_time_filter(res.get("times", []), before_time)
         with lock:
             chrono_results.update(r)
+        # Then run direct courses (which may be slower / more fragile).
+        if direct_courses:
+            def direct_done(cid, res):
+                with lock:
+                    results[cid] = res
+            fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
     browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
 
@@ -2280,15 +2291,18 @@ def get_all_teetimes_stream():
 
     def browser_worker():
         try:
-            if direct_courses:
-                def direct_done(cid, res):
-                    q.put((cid, res))
-                fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
+            # Stream Chronogolf results first so they appear quickly in the UI.
             def chrono_done(cid, res):
                 if before_time and res.get("status") == "ok":
                     res["times"] = apply_time_filter(res.get("times", []), before_time)
                 q.put((cid, res))
             fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
+
+            # Then stream direct courses (which can be slower / more fragile).
+            if direct_courses:
+                def direct_done(cid, res):
+                    q.put((cid, res))
+                fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
         except Exception as e:
             for c in chrono_courses:
                 q.put((c["id"], {"status": "error", "message": str(e)[:100], "booking_url": c.get("booking_url", ""), "times": []}))
