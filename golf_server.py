@@ -1400,7 +1400,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\s*$", re.I)
     try:
         driver.get(url)
-        _time.sleep(4)
+        _time.sleep(2)
         # Wait for Tee It Up tile times (data-testid) or "no times" / "Number of teetimes"
         def _has_tiles_or_done(d):
             try:
@@ -1413,10 +1413,10 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                 return True
             return False
         try:
-            WebDriverWait(driver, 12).until(_has_tiles_or_done)
+            WebDriverWait(driver, 8).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(1)
+        _time.sleep(0.5)
         seen = set()
         times = []
         # Primary: use Tee It Up DOM — each slot has p[data-testid="teetimes-tile-time"] and same tile has [data-testid="teetimes-tile-available-players"]
@@ -1553,7 +1553,7 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     try:
         driver.get(url)
-        _time.sleep(3)
+        _time.sleep(2)
         # Wait for slot content: #SlotBox or .teetime with time text
         def _has_slots_or_done(d):
             try:
@@ -1569,10 +1569,10 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
             except Exception:
                 return False
         try:
-            WebDriverWait(driver, 12).until(_has_slots_or_done)
+            WebDriverWait(driver, 8).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(1)
+        _time.sleep(0.5)
         seen = set()
         times = []
         for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
@@ -1696,14 +1696,14 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     price_pat = re.compile(r"\$[\d,.]+")
     try:
         driver.get(base)
-        # Wait for SPA: Filter Options and main content
+        # Wait for SPA (short wait: Filter or any body content so we can interact)
         try:
-            WebDriverWait(driver, 12).until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
+            WebDriverWait(driver, 6).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter') or contains(., 'Time')]"))
             )
         except Exception:
             pass
-        _time.sleep(1.5)
+        _time.sleep(0.5)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
         target_mm_dd = None
@@ -1732,9 +1732,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         if len(t) > 20 and target_mm_dd in t and ("/" in t.replace(target_mm_dd, "", 1)):
                             continue
                         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        _time.sleep(0.15)
+                        _time.sleep(0.05)
                         ActionChains(driver).move_to_element(el).click().perform()
-                        _time.sleep(0.6)
+                        _time.sleep(0.25)
                         break
                     except Exception:
                         continue
@@ -1768,9 +1768,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         except Exception:
                             continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.1)
+                    _time.sleep(0.05)
                     el.click()
-                    _time.sleep(0.4)
+                    _time.sleep(0.2)
                     break
                 except Exception:
                     continue
@@ -1797,7 +1797,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                             chosen = opt.text.strip()
                     if chosen:
                         SelSelect(sel_el).select_by_visible_text(chosen)
-                        _time.sleep(0.4)
+                        _time.sleep(0.2)
                         break
                 except Exception:
                     continue
@@ -1815,16 +1815,16 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         tag = el.tag_name.lower()
                         if tag in ("button", "div", "span", "a", "li"):
                             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            _time.sleep(0.1)
+                            _time.sleep(0.05)
                             el.click()
-                            _time.sleep(0.3)
+                            _time.sleep(0.15)
                             break
                     except Exception:
                         continue
         except Exception:
             pass
 
-        _time.sleep(1)
+        _time.sleep(0.4)
 
         # 4) Parse tee time cards — grid of cards: green header with time (e.g. "10:52 AM"), body with Championship, price, "4 Players"
         seen = set()
