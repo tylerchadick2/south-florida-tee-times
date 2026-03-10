@@ -329,7 +329,7 @@ CHRONOGOLF_SLOT_SELECTORS = [
 ]
 
 
-def _chronogolf_wait_any_slot(driver, timeout=1.5, poll=0.08):
+def _chronogolf_wait_any_slot(driver, timeout=1.2, poll=0.06):
     """Wait up to timeout seconds for any slot selector to appear. Returns (selector, True) or (None, False)."""
     from selenium.webdriver.common.by import By
     import time
@@ -362,7 +362,7 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
 
         # Quick network checks — API can fire at 0.3s or a bit later (e.g. Westchester); try 3 times so slow clubs still hit API
         for _ in (0, 1, 2):
-            time.sleep(0.24)
+            time.sleep(0.2)
             times = _intercept_network(driver, date_iso)
             if times is not None:
                 times = [t for t in times if int(t.get("available_spots") or 0) >= players]
@@ -370,8 +370,8 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
                     return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
                 return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
 
-        # Short wait for any slot (1.5s max, poll every 0.08s so we notice slots quickly)
-        slot_selector, found = _chronogolf_wait_any_slot(driver, timeout=1.5)
+        # Short wait for any slot (1.2s max, poll every 0.06s so we notice slots quickly)
+        slot_selector, found = _chronogolf_wait_any_slot(driver, timeout=1.2)
         if not found or not slot_selector:
             return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
 
@@ -384,9 +384,9 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
                     if t and len(t) <= 60 and any(phrase in t for phrase in view_more_texts):
                         try:
                             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            time.sleep(0.08)
+                            time.sleep(0.05)
                             el.click()
-                            time.sleep(0.22)
+                            time.sleep(0.15)
                             break
                         except Exception:
                             pass
@@ -397,16 +397,16 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
             pass
         try:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.12)
-            driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(0.08)
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.05)
         except Exception:
             pass
         if os.environ.get("CHRONOGOLF_DUMP_DOM") == "1":
             _chronogolf_dump_filter_dom_once(driver)
         _chronogolf_click_player_filter(driver, players)
-        time.sleep(0.2)
-        slot_selector, _ = _chronogolf_wait_any_slot(driver, timeout=0.8)
+        time.sleep(0.15)
+        slot_selector, _ = _chronogolf_wait_any_slot(driver, timeout=0.6)
         if slot_selector:
             try:
                 els = driver.find_elements(By.CSS_SELECTOR, slot_selector)
@@ -526,7 +526,7 @@ def _chronogolf_click_player_filter(driver, players):
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
             time.sleep(0.05)
             el.click()
-            time.sleep(0.18)
+            time.sleep(0.12)
 
         # 1) Find Group size section: element containing "group size" and option text ("Any" / "1 player")
         group_size_container = None
@@ -1400,7 +1400,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\s*$", re.I)
     try:
         driver.get(url)
-        _time.sleep(2)
+        _time.sleep(1.2)
         # Wait for Tee It Up tile times (data-testid) or "no times" / "Number of teetimes"
         def _has_tiles_or_done(d):
             try:
@@ -1413,10 +1413,10 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                 return True
             return False
         try:
-            WebDriverWait(driver, 8).until(_has_tiles_or_done)
+            WebDriverWait(driver, 6).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(0.5)
+        _time.sleep(0.3)
         seen = set()
         times = []
         # Primary: use Tee It Up DOM — each slot has p[data-testid="teetimes-tile-time"] and same tile has [data-testid="teetimes-tile-available-players"]
@@ -1553,7 +1553,7 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     try:
         driver.get(url)
-        _time.sleep(2)
+        _time.sleep(1.2)
         # Wait for slot content: #SlotBox or .teetime with time text
         def _has_slots_or_done(d):
             try:
@@ -1569,10 +1569,10 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
             except Exception:
                 return False
         try:
-            WebDriverWait(driver, 8).until(_has_slots_or_done)
+            WebDriverWait(driver, 6).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(0.5)
+        _time.sleep(0.3)
         seen = set()
         times = []
         for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
@@ -1696,14 +1696,14 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     price_pat = re.compile(r"\$[\d,.]+")
     try:
         driver.get(base)
-        # Wait for SPA (short wait: Filter or any body content so we can interact)
+        # Wait for SPA to be ready (Render can be slower than local)
         try:
-            WebDriverWait(driver, 6).until(
+            WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter') or contains(., 'Time')]"))
             )
         except Exception:
             pass
-        _time.sleep(0.5)
+        _time.sleep(0.8)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
         target_mm_dd = None
@@ -1732,9 +1732,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         if len(t) > 20 and target_mm_dd in t and ("/" in t.replace(target_mm_dd, "", 1)):
                             continue
                         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        _time.sleep(0.05)
+                        _time.sleep(0.08)
                         ActionChains(driver).move_to_element(el).click().perform()
-                        _time.sleep(0.25)
+                        _time.sleep(0.5)
                         break
                     except Exception:
                         continue
@@ -1768,9 +1768,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         except Exception:
                             continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.05)
+                    _time.sleep(0.08)
                     el.click()
-                    _time.sleep(0.2)
+                    _time.sleep(0.4)
                     break
                 except Exception:
                     continue
@@ -1797,7 +1797,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                             chosen = opt.text.strip()
                     if chosen:
                         SelSelect(sel_el).select_by_visible_text(chosen)
-                        _time.sleep(0.2)
+                        _time.sleep(1.2)
                         break
                 except Exception:
                     continue
@@ -1815,16 +1815,30 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         tag = el.tag_name.lower()
                         if tag in ("button", "div", "span", "a", "li"):
                             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            _time.sleep(0.05)
+                            _time.sleep(0.08)
                             el.click()
-                            _time.sleep(0.15)
+                            _time.sleep(1.2)
                             break
                     except Exception:
                         continue
         except Exception:
             pass
 
-        _time.sleep(0.4)
+        # Wait for tee time grid to refresh (critical on Render — grid loads after course select)
+        def _has_tee_card(d):
+            try:
+                for el in d.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
+                    txt = (el.text or "").strip()
+                    if len(txt) < 250 and ("championship" in txt.lower() or "$" in txt):
+                        return True
+            except Exception:
+                pass
+            return False
+        try:
+            WebDriverWait(driver, 8).until(_has_tee_card)
+        except Exception:
+            pass
+        _time.sleep(0.5)
 
         # 4) Parse tee time cards — grid of cards: green header with time (e.g. "10:52 AM"), body with Championship, price, "4 Players"
         seen = set()
