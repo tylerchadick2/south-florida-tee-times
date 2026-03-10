@@ -42,6 +42,13 @@ def _debug_log(location, message, data, hypothesis_id=None):
 # #endregion
 
 app = Flask(__name__, static_folder=".")
+
+# On low-memory hosts (e.g. Render free tier), run only one browser at a time so scrapes finish.
+# Set MAX_PARALLEL_BROWSERS=1 in the environment to enable (recommended for Render).
+def _max_browser_workers():
+    v = os.environ.get("MAX_PARALLEL_BROWSERS", "").strip().lower()
+    return 1 if v in ("1", "true", "yes", "low") else 6
+
 CORS(app)
 
 # ─────────────────────────────────────────────
@@ -435,7 +442,7 @@ def fetch_all_chronogolf(courses, date_iso, players, on_course_done=None):
 
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        max_workers = min(len(courses), 6)
+        max_workers = min(len(courses), _max_browser_workers())
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_fetch_one_chronogolf_course, c, date_iso, players): c for c in courses}
             for future in as_completed(futures, timeout=90):
@@ -1937,7 +1944,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
         if on_course_done:
             with lock:
                 on_course_done(course_id, result)
-    max_workers = min(len(courses), 6)
+    max_workers = min(len(courses), _max_browser_workers())
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_fetch_one_direct_course, c, date_iso, players, before_time): c for c in courses}
         for future in as_completed(futures, timeout=120):
