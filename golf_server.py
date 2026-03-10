@@ -1959,8 +1959,9 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 on_course_done(course_id, result)
 
     max_workers = _max_browser_workers()
-    # Per-course timeout so we never hang forever on one course (Render 512MB can cause Chrome to hang)
-    per_course_timeout = 55
+    # Per-course timeout so we never hang forever on one course (Render 512MB can cause Chrome to hang).
+    # 40s is enough for real pages to load but keeps worst-case delay reasonable when a site is very slow.
+    per_course_timeout = 40
 
     if max_workers == 1:
         # Sequential: run one course at a time with timeout so every course gets a result
