@@ -47,7 +47,13 @@ app = Flask(__name__, static_folder=".")
 # Set MAX_PARALLEL_BROWSERS=1 in the environment to enable (recommended for Render).
 def _max_browser_workers():
     v = os.environ.get("MAX_PARALLEL_BROWSERS", "").strip().lower()
-    return 1 if v in ("1", "true", "yes", "low") else 6
+    if v in ("1", "true", "yes", "low"):
+        return 1
+    try:
+        n = int(v)
+        return max(1, min(6, n))
+    except ValueError:
+        return 6
 
 CORS(app)
 
@@ -287,14 +293,17 @@ def _get_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--blink-settings=imagesEnabled=false")
-    options.add_argument("--window-size=1280,900")
+    options.add_argument("--window-size=1024,768")
     options.add_argument("--log-level=3")
-    # Reduce memory use on small hosts (e.g. Render free tier)
+    # Reduce memory for 512MB limit (Render free tier): one Chrome can use 200–400MB
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-sync")
     options.add_argument("--disable-translate")
     options.add_argument("--no-first-run")
+    options.add_argument("--disable-features=site-per-process,TranslateUI")
+    options.add_argument("--js-flags=--max-old-space-size=96")
+    options.add_argument("--renderer-process-limit=1")
     options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     options.page_load_strategy = "eager"
@@ -818,7 +827,7 @@ def _golfnow_set_date_in_calendar(driver, date_iso):
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 el.clear()
                 el.send_keys(date_iso)
-                time.sleep(3)
+                time.sleep(1.5)
                 _debug_log("golfnow:calendar", "set_via_input", {"date_iso": date_iso}, "H4")
                 return
             except Exception:
@@ -829,7 +838,7 @@ def _golfnow_set_date_in_calendar(driver, date_iso):
                 open_el = driver.find_element(By.CSS_SELECTOR, click_sel)
                 if open_el.is_displayed():
                     open_el.click()
-                    time.sleep(1.5)
+                    time.sleep(0.8)
                     break
             except Exception:
                 continue
@@ -838,9 +847,9 @@ def _golfnow_set_date_in_calendar(driver, date_iso):
             try:
                 if el.is_displayed():
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     el.click()
-                    time.sleep(4)
+                    time.sleep(2)
                     _debug_log("golfnow:calendar", "clicked_day", {"date_iso": date_iso, "day_str": day_str}, "H4")
                     return
             except Exception:
@@ -857,9 +866,9 @@ def _golfnow_set_date_in_calendar(driver, date_iso):
                 if text != day_str and day_str not in text.split():
                     continue
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                time.sleep(0.3)
+                time.sleep(0.2)
                 el.click()
-                time.sleep(4)
+                time.sleep(2)
                 _debug_log("golfnow:calendar", "clicked_day_fallback", {"date_iso": date_iso, "day_str": day_str}, "H4")
                 return
             except Exception:
@@ -883,9 +892,9 @@ def _golfnow_click_show_more(driver, max_clicks=35):
                         continue
                     if any(phrase in t for phrase in show_more_texts):
                         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         el.click()
-                        time.sleep(2)
+                        time.sleep(1)
                         clicked = True
                         break
                 except Exception:
@@ -1228,16 +1237,16 @@ def _fetch_direct_golfnow_with_driver(driver, course, date_iso, players):
         import time
         full_url = base_url + ("&" if "?" in base_url else "?") + f"searchDate={date_iso}"
         driver.get(full_url)
-        time.sleep(10)
+        time.sleep(5)
         try:
-            WebDriverWait(driver, 25).until_not(
+            WebDriverWait(driver, 12).until_not(
                 EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Fetching more results")
             )
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(1)
         _golfnow_set_date_in_calendar(driver, date_iso)
-        time.sleep(3)
+        time.sleep(1.5)
         _time_pattern = re.compile(r"\b\d{1,2}:\d{2}\s*(?:AM|PM)\b", re.I)
         def _body_has_tee_times_or_done(d):
             text = (_selenium_get_visible_text(d) or "")
@@ -1249,31 +1258,31 @@ def _fetch_direct_golfnow_with_driver(driver, course, date_iso, players):
                 return True
             return False
         try:
-            WebDriverWait(driver, 30).until(_body_has_tee_times_or_done)
+            WebDriverWait(driver, 18).until(_body_has_tee_times_or_done)
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(1)
         # Wait for tee time cards to be in DOM (Florida Club often renders only 2-3 initially; wait for more)
         def _has_enough_wrappers(d):
             n = len(d.find_elements(By.CSS_SELECTOR, "div.promoted-campaign-wrapper"))
             return n >= 8
         try:
-            WebDriverWait(driver, 25).until(_has_enough_wrappers)
+            WebDriverWait(driver, 12).until(_has_enough_wrappers)
         except Exception:
             pass
-        time.sleep(1.5)
+        time.sleep(0.8)
         # Scroll results area into view and to bottom to trigger any lazy-loaded cards
         try:
             for sect in driver.find_elements(By.CSS_SELECTOR, "section.search-results.location.content, section[class*='search-results']"):
                 try:
                     driver.execute_script("arguments[0].scrollIntoView({block:'start'});", sect)
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                 except Exception:
                     pass
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
+            time.sleep(1)
             driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(0.5)
+            time.sleep(0.3)
         except Exception:
             pass
         body_snippet = (_selenium_get_visible_text(driver) or "")[:1200]
@@ -1391,7 +1400,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\s*$", re.I)
     try:
         driver.get(url)
-        _time.sleep(8)
+        _time.sleep(4)
         # Wait for Tee It Up tile times (data-testid) or "no times" / "Number of teetimes"
         def _has_tiles_or_done(d):
             try:
@@ -1404,10 +1413,10 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                 return True
             return False
         try:
-            WebDriverWait(driver, 20).until(_has_tiles_or_done)
+            WebDriverWait(driver, 12).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(2)
+        _time.sleep(1)
         seen = set()
         times = []
         # Primary: use Tee It Up DOM — each slot has p[data-testid="teetimes-tile-time"] and same tile has [data-testid="teetimes-tile-available-players"]
@@ -1544,7 +1553,7 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     try:
         driver.get(url)
-        _time.sleep(6)
+        _time.sleep(3)
         # Wait for slot content: #SlotBox or .teetime with time text
         def _has_slots_or_done(d):
             try:
@@ -1560,10 +1569,10 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
             except Exception:
                 return False
         try:
-            WebDriverWait(driver, 20).until(_has_slots_or_done)
+            WebDriverWait(driver, 12).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(2)
+        _time.sleep(1)
         seen = set()
         times = []
         for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
@@ -1689,12 +1698,12 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         driver.get(base)
         # Wait for SPA: Filter Options and main content
         try:
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, 12).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
             )
         except Exception:
             pass
-        _time.sleep(3)
+        _time.sleep(1.5)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
         target_mm_dd = None
@@ -1723,9 +1732,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         if len(t) > 20 and target_mm_dd in t and ("/" in t.replace(target_mm_dd, "", 1)):
                             continue
                         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        _time.sleep(0.2)
+                        _time.sleep(0.15)
                         ActionChains(driver).move_to_element(el).click().perform()
-                        _time.sleep(1.2)
+                        _time.sleep(0.6)
                         break
                     except Exception:
                         continue
@@ -1759,9 +1768,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         except Exception:
                             continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.15)
+                    _time.sleep(0.1)
                     el.click()
-                    _time.sleep(0.8)
+                    _time.sleep(0.4)
                     break
                 except Exception:
                     continue
@@ -1788,7 +1797,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                             chosen = opt.text.strip()
                     if chosen:
                         SelSelect(sel_el).select_by_visible_text(chosen)
-                        _time.sleep(0.8)
+                        _time.sleep(0.4)
                         break
                 except Exception:
                     continue
@@ -1806,16 +1815,16 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         tag = el.tag_name.lower()
                         if tag in ("button", "div", "span", "a", "li"):
                             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            _time.sleep(0.15)
+                            _time.sleep(0.1)
                             el.click()
-                            _time.sleep(0.6)
+                            _time.sleep(0.3)
                             break
                     except Exception:
                         continue
         except Exception:
             pass
 
-        _time.sleep(2)
+        _time.sleep(1)
 
         # 4) Parse tee time cards — grid of cards: green header with time (e.g. "10:52 AM"), body with Championship, price, "4 Players"
         seen = set()
@@ -2183,7 +2192,7 @@ def get_all_teetimes():
     for t in foreup_threads:
         t.start()
 
-    # Direct (GolfNow, TeeItUp, Club Caddie) in parallel, then Chronogolf last
+    # Direct and Chronogolf: run Chrome
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
@@ -2202,12 +2211,11 @@ def get_all_teetimes():
     browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
 
-    # Wait for all (allow enough time when running one browser at a time on slow hosts)
+    # Wait for ForeUp
     for t in foreup_threads:
         t.join(timeout=15)
     browser_join = max(180, 90 * (len(direct_courses) + len(chrono_courses))) if _max_browser_workers() == 1 else 180
     browser_thread.join(timeout=browser_join)
-
     results.update(chrono_results)
 
     # Fill in any missing (timeouts; direct courses already set above)
@@ -2242,7 +2250,6 @@ def get_all_teetimes_stream():
         result = fetch_course(course, date_str, players, before_time)
         q.put((course["id"], result))
 
-    # Direct (Atlantic National, Florida Club, Boca) in parallel, then Chronogolf in parallel
     def browser_worker():
         if direct_courses:
             def direct_done(cid, res):

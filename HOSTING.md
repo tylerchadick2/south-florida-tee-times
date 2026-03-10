@@ -93,10 +93,10 @@ Click **Advanced** → **Add Environment Variable**. Add:
 
 | Key | Value | Why |
 |-----|--------|-----|
-| `MAX_PARALLEL_BROWSERS` | `1` | Runs one Chrome at a time so the free instance doesn’t run out of memory. Chronogolf and direct courses will finish instead of being very slow or timing out. |
+| `MAX_PARALLEL_BROWSERS` | `1` | **Required on Render free tier (512MB).** Use only 1 Chrome at a time so you don’t run out of memory. With `2` or more the instance can be killed (“Ran out of memory”). |
 | `PYTHONUNBUFFERED` | `1` | (Optional) Cleaner logs. |
 
-Render already sets `PORT`; you don’t need to add it.
+Render already sets `PORT`.
 
 ---
 
@@ -141,7 +141,7 @@ Render already sets `PORT`; you don’t need to add it.
 
 - **Spins down** after ~15 minutes of no traffic. The **first** request after that can take ~30–60 seconds (cold start); after that it’s fast.  
 - **750 hours/month** free — enough for one service running 24/7.  
-- **Chronogolf / direct courses very slow?** Set `MAX_PARALLEL_BROWSERS=1` (see Step 4). The free instance has limited CPU/RAM; running one browser at a time keeps scrapes from thrashing and timing out.  
+- **“Instance failed: Ran out of memory (used over 512MB)”** — Render free tier has a 512MB limit. Set **`MAX_PARALLEL_BROWSERS=1`** so only one Chrome runs at a time. The app also uses lighter Chrome settings to stay under the limit.  
 - No code changes are required: the same repo works locally and on Render.
 
 ## Option 2: Run Docker locally (same image as production)
