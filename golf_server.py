@@ -1969,8 +1969,8 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
     max_workers = _max_browser_workers()
     # Per-course timeout so we never hang forever on one course (Render 512MB can cause Chrome to hang).
-    # 40s is enough for real pages to load but keeps worst-case delay reasonable when a site is very slow.
-    per_course_timeout = 40
+    # Use a shorter cap for most sites, but give Boynton Beach a bit more room since its UI has more steps.
+    base_timeout = 40
 
     if max_workers == 1:
         # Sequential: run one course at a time with timeout so every course gets a result
@@ -1985,12 +1985,15 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
             t = threading.Thread(target=_run)
             t.start()
-            t.join(timeout=per_course_timeout)
+            # Boynton Beach Links (id=14) gets a slightly higher cap since it used to work reliably
+            # and involves a few extra UI interactions; other sites use the base timeout.
+            course_timeout = base_timeout + 30 if course.get("id") == 14 else base_timeout
+            t.join(timeout=course_timeout)
             if out[0] is not None:
                 course_id, result = out[0]
                 _done(course_id, result)
             else:
-                _done(course["id"], {"status": "error", "message": "Timed out (%ss)" % per_course_timeout, "booking_url": course.get("booking_url", ""), "times": []})
+                _done(course["id"], {"status": "error", "message": "Timed out (%ss)" % course_timeout, "booking_url": course.get("booking_url", ""), "times": []})
         return
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2212,12 +2215,15 @@ def get_all_teetimes():
     lock = threading.Lock()
 
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
-    # Run Winston Trails and Westchester first so they don't hit the end of timeout
+    # Run Winston Trails and Westchester first among Chronogolf so they don't hit the end of timeout
     chrono_courses = sorted(
         [c for c in COURSES if c["type"] == "chronogolf"],
         key=lambda c: (0 if c["id"] in (11, 12) else 1, c["id"]),
     )
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
+    # Boynton Beach Links (id=14) should run last overall so slow behavior never blocks other results.
+    boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
+    direct_non_boynton = [c for c in direct_courses if c["id"] != 14]
 
     def course_worker(course):
         result = fetch_course(course, date_str, players, before_time)
@@ -2233,7 +2239,13 @@ def get_all_teetimes():
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
-        # Run Chronogolf first so those courses return quickly even if a direct site is slow.
+        # 1) Run all non-Boynton direct courses.
+        if direct_non_boynton:
+            def direct_done(cid, res):
+                with lock:
+                    results[cid] = res
+            fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
+        # 2) Run Chronogolf courses (second to last).
         r = fetch_all_chronogolf(chrono_courses, date_str, players)
         if before_time:
             for cid, res in r.items():
@@ -2241,12 +2253,12 @@ def get_all_teetimes():
                     res["times"] = apply_time_filter(res.get("times", []), before_time)
         with lock:
             chrono_results.update(r)
-        # Then run direct courses (which may be slower / more fragile).
-        if direct_courses:
-            def direct_done(cid, res):
+        # 3) Run Boynton Beach Links last so it never delays other results.
+        if boynton_course:
+            def boynton_done(cid, res):
                 with lock:
                     results[cid] = res
-            fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
+            fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
     browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
 
@@ -2282,6 +2294,8 @@ def get_all_teetimes_stream():
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
     chrono_courses = sorted([c for c in COURSES if c["type"] == "chronogolf"], key=lambda c: (0 if c["id"] in (11, 12) else 1, c["id"]))
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
+    boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
+    direct_non_boynton = [c for c in direct_courses if c["id"] != 14]
     q = Queue()
     total = len(COURSES)
 
@@ -2291,18 +2305,24 @@ def get_all_teetimes_stream():
 
     def browser_worker():
         try:
-            # Stream Chronogolf results first so they appear quickly in the UI.
+            # 1) Stream non-Boynton direct courses first.
+            if direct_non_boynton:
+                def direct_done(cid, res):
+                    q.put((cid, res))
+                fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
+
+            # 2) Then stream Chronogolf results (second to last).
             def chrono_done(cid, res):
                 if before_time and res.get("status") == "ok":
                     res["times"] = apply_time_filter(res.get("times", []), before_time)
                 q.put((cid, res))
             fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
 
-            # Then stream direct courses (which can be slower / more fragile).
-            if direct_courses:
-                def direct_done(cid, res):
+            # 3) Stream Boynton Beach Links last so it never delays other courses.
+            if boynton_course:
+                def boynton_done(cid, res):
                     q.put((cid, res))
-                fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
+                fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
         except Exception as e:
             for c in chrono_courses:
                 q.put((c["id"], {"status": "error", "message": str(e)[:100], "booking_url": c.get("booking_url", ""), "times": []}))
