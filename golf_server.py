@@ -41,6 +41,24 @@ def _debug_log(location, message, data, hypothesis_id=None):
         pass
 # #endregion
 
+# Timing: set TIMING=1 to print per-phase elapsed seconds to console (see what's slow)
+def _timing_enabled():
+    return os.environ.get("TIMING", "").strip().lower() in ("1", "true", "yes")
+
+
+def _log_timing(label, start_monotonic, course_name=None):
+    """If TIMING=1, print elapsed seconds since start_monotonic. start_monotonic = time.monotonic() at phase start."""
+    if not _timing_enabled():
+        return
+    try:
+        import time as _t
+        elapsed = _t.monotonic() - start_monotonic
+        prefix = f"  [{course_name}] " if course_name else "  "
+        print(f"{prefix}{label}: {elapsed:.1f}s")
+    except Exception:
+        pass
+
+
 app = Flask(__name__, static_folder=".")
 
 # Browser concurrency: 2 parallel by default (fast results without OOM). On 512MB (e.g. Render) set MAX_PARALLEL_BROWSERS=1.
@@ -366,28 +384,37 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
     Fetch tee times for a single Chronogolf course using its own browser.
     Returns (course_id, result). Used so we can run all Chronogolf courses in parallel.
     """
+    import time
+    from selenium.webdriver.common.by import By
+    name = course.get("name", "Chronogolf")
     driver = None
     try:
+        t0 = time.monotonic()
         driver = _get_driver()
+        _log_timing("get_driver", t0, name)
         slug = course["chronogolf_slug"]
         url = f"https://www.chronogolf.com/club/{slug}?date={date_iso}&step=teetimes&holes=&coursesIds=&deals=false&groupSize={players}"
+        t1 = time.monotonic()
         driver.get(url)
-
-        import time
-        from selenium.webdriver.common.by import By
+        _log_timing("page load", t1, name)
 
         # Quick network checks — API can fire at 0.3s or a bit later (e.g. Westchester); try 3 times so slow clubs still hit API
+        t2 = time.monotonic()
         for _ in (0, 1, 2):
             time.sleep(0.15)
             times = _intercept_network(driver, date_iso)
             if times is not None:
                 times = [t for t in times if int(t.get("available_spots") or 0) >= players]
+                _log_timing("network intercept (hit API)", t2, name)
                 if times:
                     return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
                 return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
+        _log_timing("network intercept (no API)", t2, name)
 
         # Short wait for any slot (1.0s max, poll every 0.05s so we notice slots quickly)
+        t3 = time.monotonic()
         slot_selector, found = _chronogolf_wait_any_slot(driver, timeout=1.0)
+        _log_timing("wait_any_slot", t3, name)
         if not found or not slot_selector:
             return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
 
@@ -423,6 +450,7 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
         _chronogolf_click_player_filter(driver, players)
         time.sleep(0.15)
         slot_selector, _ = _chronogolf_wait_any_slot(driver, timeout=0.5)
+        t4 = time.monotonic()
         if slot_selector:
             try:
                 els = driver.find_elements(By.CSS_SELECTOR, slot_selector)
@@ -430,6 +458,7 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
                     times = _parse_dom(els, players)
                     times = [t for t in times if int(t.get("available_spots") or 0) >= players]
                     if times:
+                        _log_timing("DOM parse (slot_selector)", t4, name)
                         return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
             except Exception:
                 pass
@@ -440,9 +469,11 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
                     times = _parse_dom(els, players)
                     times = [t for t in times if int(t.get("available_spots") or 0) >= players]
                     if times:
+                        _log_timing("DOM parse (fallback selectors)", t4, name)
                         return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
             except Exception:
                 continue
+        _log_timing("DOM parse (no slots)", t4, name)
         return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
     except Exception as e:
         return (course["id"], {"status": "error", "message": f"Error: {str(e)[:100]}", "booking_url": course.get("booking_url", "")})
@@ -1427,9 +1458,13 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
     else:
         booking_url_with_date += "?date=" + date_iso
     time_pat = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\s*$", re.I)
+    name = course.get("name", "TeeItUp")
     try:
+        t0 = _time.monotonic()
         driver.get(url)
+        _log_timing("page load", t0, name)
         _time.sleep(1.0)
+        t1 = _time.monotonic()
         # Wait for Tee It Up tile times (data-testid) or "no times" / "Number of teetimes"
         def _has_tiles_or_done(d):
             try:
@@ -1446,6 +1481,8 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         except Exception:
             pass
         _time.sleep(0.3)
+        _log_timing("wait for tiles", t1, name)
+        t2 = _time.monotonic()
         seen = set()
         times = []
         tree = _parse_html_with_lxml(driver)
@@ -1487,6 +1524,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                         continue
             except Exception:
                 pass
+        _log_timing("parse tiles", t2, name)
         if not times:
             for time_el in driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']"):
                 try:
@@ -1707,9 +1745,13 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
     url = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
     booking_url_with_date = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
+    name = course.get("name", "Club Caddie")
     try:
+        t0 = _time.monotonic()
         driver.get(url)
+        _log_timing("page load", t0, name)
         _time.sleep(1.0)
+        t1 = _time.monotonic()
         # Wait for slot content: #SlotBox or .teetime with time text
         def _has_slots_or_done(d):
             try:
@@ -1729,6 +1771,8 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
         except Exception:
             pass
         _time.sleep(0.3)
+        _log_timing("wait for slots", t1, name)
+        t2 = _time.monotonic()
         seen = set()
         times = []
         tree = _parse_html_with_lxml(driver)
@@ -1774,6 +1818,7 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
                         break
             except Exception:
                 pass
+        _log_timing("parse slots", t2, name)
         if not times:
             for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
                 try:
@@ -1886,6 +1931,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     from selenium.webdriver.common.action_chains import ActionChains
     import time as _time
     import datetime as _dt
+    name = course.get("name", "Eagle Club")
     base = (course.get("scrape_url") or course.get("booking_url", "")).strip()
     if not base:
         return {"status": "error", "message": "No Eagle Club URL", "booking_url": "", "times": []}
@@ -1894,8 +1940,11 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     price_pat = re.compile(r"\$[\d,.]+")
     try:
+        t0 = _time.monotonic()
         driver.get(base)
+        _log_timing("page load", t0, name)
         # Wait for SPA (Filter Options); shorter wait so we don't burn timeout on slow loads
+        t1 = _time.monotonic()
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
@@ -1903,6 +1952,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         except Exception:
             pass
         _time.sleep(1)
+        _log_timing("wait for Filter + sleep", t1, name)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
         target_mm_dd = None
@@ -1917,6 +1967,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
 
         # 1) Set date — click the date CARD that matches target (horizontal strip: "Tue 03/10", "Wed 03/11", ...)
+        t_date = _time.monotonic()
         if target_mm_dd:
             try:
                 # Prefer: clickable element whose text contains MM/DD (e.g. "Sat 03/14")
@@ -1939,8 +1990,10 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         continue
             except Exception:
                 pass
+        _log_timing("date click", t_date, name)
 
         # 2) Set number of players — Filter Options: buttons "ANY", "1", "2", "3", "4"; click the number
+        t2 = _time.monotonic()
         players_val = max(1, min(4, int(players) if players else 4))
         try:
             num = str(players_val)
@@ -1975,8 +2028,10 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     continue
         except Exception:
             pass
+        _log_timing("players click", t2, name)
 
         # 3) Choose Course — dropdown: select "Championship" only (not "Championship Back")
+        t3 = _time.monotonic()
         try:
             # Native <select>: pick option whose text is exactly "Championship" (exclude "Championship Back")
             for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
@@ -2022,10 +2077,12 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         continue
         except Exception:
             pass
+        _log_timing("course dropdown", t3, name)
 
         _time.sleep(1.5)
 
         # 4) Parse tee time cards — lxml first (faster), then Selenium fallback
+        t4 = _time.monotonic()
         seen = set()
         times = []
         tree = _parse_html_with_lxml(driver)
@@ -2131,6 +2188,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             return (h, min_)
 
         times.sort(key=_time_key)
+        _log_timing("parse tee cards", t4, name)
         if times:
             return {"status": "ok", "times": times[:120], "booking_url": booking_url}
 
@@ -2649,5 +2707,6 @@ if __name__ == "__main__":
     print(f"   Server: http://localhost:{port}" + (" (all interfaces)" if host == "0.0.0.0" else ""))
     print(f"   Debug log: {DEBUG_LOG_PATH}")
     print("   (Run with DEBUG=1 to echo debug lines to console)")
+    print("   (Run with TIMING=1 to see per-phase seconds for Chronogolf/direct scrapes)")
     print("   Press Ctrl+C to stop\n")
     app.run(debug=False, host=host, port=port, threaded=True)
