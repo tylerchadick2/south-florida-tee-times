@@ -1,0 +1,23 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+*.pyc
+__pycache__
+.pytest_cache
+.env
+.env.*
+
+# Checkpoints and local-only files (keep one source of truth in image)
+*checkpoint*
+chronogolf_raw.html
+teeitup_dom_snapshot.html
+*.log
+
+# Docs (optional: remove if you want HOSTING.md in image)
+# HOSTING.md
+
+# Test and misc
+test_*.py
+*.md
+!requirements.txt

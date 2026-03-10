@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>South Florida Tee Times</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1f15;
+      --surface: #122019;
+      --card: #1a2e21;
+      --card-hover: #1f3527;
+      --border: rgba(255,255,255,0.07);
+      --green: #4ade80;
+      --green-dim: #2d7a4f;
+      --gold: #d4a843;
+      --gold-dim: #8a6a20;
+      --cream: #f0e8d5;
+      --text: #e8f0eb;
+      --text-mid: #8fa899;
+      --text-dim: #4a6355;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --radius: 14px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Subtle grass texture background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(74,222,128,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 40% 30% at 90% 80%, rgba(212,168,67,0.04) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 20px 80px;
+    }
+
+    /* ── HEADER ── */
+    header {
+      padding: 52px 0 40px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 40px;
+    }
+
+    .header-left h1 {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      font-weight: 700;
+      line-height: 1;
+      color: var(--cream);
+      letter-spacing: -1px;
+    }
+
+    .header-left h1 em {
+      font-style: italic;
+      color: var(--gold);
+    }
+
+    .header-left p {
+      margin-top: 8px;
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+
+    .header-flag {
+      font-size: 3rem;
+      line-height: 1;
+      filter: drop-shadow(0 4px 16px rgba(74,222,128,0.2));
+    }
+
+    /* ── CONTROLS ── */
+    .controls {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      margin-bottom: 36px;
+      display: flex;
+      gap: 20px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex: 1;
+      min-width: 140px;
+    }
+
+    label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 1.8px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    input, select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 11px 14px;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.92rem;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      width: 100%;
+      -webkit-appearance: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--green-dim);
+      box-shadow: 0 0 0 3px rgba(74,222,128,0.08);
+    }
+
+    select option { background: #1a2e21; }
+
+    .search-btn {
+      padding: 11px 28px;
+      background: var(--green-dim);
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+      flex-shrink: 0;
+    }
+
+    .search-btn:hover { background: #38a063; transform: translateY(-1px); }
+    .search-btn:active { transform: translateY(0); }
+    .search-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── STATUS BAR ── */
+    .status-bar {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.82rem;
+      color: var(--text-mid);
+      margin-bottom: 24px;
+      padding: 10px 16px;
+      background: rgba(74,222,128,0.05);
+      border: 1px solid rgba(74,222,128,0.1);
+      border-radius: 8px;
+    }
+    .status-bar.visible { display: flex; }
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--green);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── COURSE GRID ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    /* ── COURSE CARD ── */
+    .course-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color 0.2s, transform 0.2s;
+      animation: fadeUp 0.4s ease both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .course-card:hover { border-color: rgba(74,222,128,0.2); }
+
+    .card-head {
+      padding: 16px 20px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .card-head-left { flex: 1; min-width: 0; }
+
+    .course-num {
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--gold-dim);
+      margin-bottom: 3px;
+    }
+
+    .course-name {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--cream);
+      line-height: 1.2;
+    }
+
+    .course-loc {
+      font-size: 0.74rem;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    .card-badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 20px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .badge-live { background: rgba(74,222,128,0.12); color: var(--green); border: 1px solid rgba(74,222,128,0.2); }
+    .badge-link { background: rgba(212,168,67,0.1); color: var(--gold); border: 1px solid rgba(212,168,67,0.2); }
+    .badge-chrono { background: rgba(96,165,250,0.1); color: var(--blue); border: 1px solid rgba(96,165,250,0.2); }
+
+    /* ── TIMES SECTION ── */
+    .card-body { padding: 16px 20px 20px; }
+
+    .idle-msg {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    .loading-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: var(--text-mid);
+    }
+
+    .times-count {
+      font-size: 0.75rem;
+      color: var(--text-mid);
+      margin-bottom: 10px;
+    }
+
+    .times-count strong { color: var(--green); }
+
+    .times-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .time-pill {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 6px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: default;
+      transition: all 0.15s;
+      min-width: 70px;
+    }
+
+    .time-pill:hover {
+      border-color: rgba(74,222,128,0.3);
+      background: rgba(74,222,128,0.05);
+    }
+
+    .time-pill .t-time {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .time-pill .t-spots {
+      font-size: 0.64rem;
+      color: var(--text-dim);
+      margin-top: 1px;
+    }
+
+    .time-pill .t-fee {
+      font-size: 0.64rem;
+      color: var(--gold);
+      margin-top: 1px;
+    }
+
+    .no-times {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-style: italic;
+      padding: 4px 0;
+    }
+
+    .error-msg {
+      font-size: 0.8rem;
+      color: var(--red);
+    }
+
+    .book-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--gold);
+      text-decoration: none;
+      padding: 7px 14px;
+      border: 1px solid rgba(212,168,67,0.25);
+      border-radius: 7px;
+      transition: all 0.15s;
+      margin-top: 4px;
+    }
+
+    .book-link:hover {
+      background: rgba(212,168,67,0.08);
+      border-color: rgba(212,168,67,0.5);
+    }
+
+    .book-link svg { width: 11px; height: 11px; }
+
+    /* ── SUMMARY STRIP ── */
+    .summary {
+      display: none;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 28px;
+      margin-bottom: 28px;
+      gap: 32px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .summary.visible { display: flex; }
+
+    .sum-item { text-align: center; }
+    .sum-val { font-family: 'Cormorant Garamond', serif; font-size: 2rem; font-weight: 700; color: var(--cream); line-height: 1; }
+    .sum-label { font-size: 0.68rem; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-dim); margin-top: 3px; }
+    .sum-divider { width: 1px; height: 40px; background: var(--border); }
+
+    @media (max-width: 600px) {
+      .controls { padding: 20px; }
+      .search-btn { width: 100%; }
+      .grid { grid-template-columns: 1fr; }
+      header { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="header-left">
+      <h1>South Florida<br><em>Tee Times</em></h1>
+      <p>Live availability · <span id="courseCount">12</span> local courses</p>
+    </div>
+    <div class="header-flag">⛳</div>
+  </header>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="datePicker"/>
+    </div>
+    <div class="field" style="max-width:130px">
+      <label>Golfers</label>
+      <select id="playersPicker">
+        <option value="1">1 Golfer</option>
+        <option value="2">2 Golfers</option>
+        <option value="3">3 Golfers</option>
+        <option value="4" selected>4 Golfers</option>
+      </select>
+    </div>
+    <div class="field" style="max-width:160px">
+      <label>Before Time (optional)</label>
+      <input type="time" id="beforeTime" value="16:00" placeholder="e.g. 16:00 = 4 PM"/>
+    </div>
+    <button class="search-btn" id="searchBtn" onclick="searchAll()">Check All Courses →</button>
+  </div>
+
+  <!-- Status -->
+  <div class="status-bar" id="statusBar">
+    <div class="spinner"></div>
+    <span id="statusText">Checking courses...</span>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary" id="summary">
+    <div class="sum-item">
+      <div class="sum-val" id="sumTotal">—</div>
+      <div class="sum-label">Total Times Found</div>
+    </div>
+    <div class="sum-divider"></div>
+    <div class="sum-item">
+      <div class="sum-val" id="sumCourses">—</div>
+      <div class="sum-label">Courses with Availability</div>
+    </div>
+    <div class="sum-divider"></div>
+    <div class="sum-item">
+      <div class="sum-val" id="sumDate">—</div>
+      <div class="sum-label">Date</div>
+    </div>
+  </div>
+
+  <!-- Grid -->
+  <div class="grid" id="grid"></div>
+
+</div>
+
+<script>
+  // Use same origin when hosted (e.g. Railway/Render); localhost when developing
+  const API = typeof window !== "undefined" && window.location && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost"
+    ? "" : "http://127.0.0.1:5000";
+
+  // Fallback list if API not reachable; otherwise loaded from /api/courses
+  let COURSES = [
+    { id:1,  name:"Osprey Pointe",             location:"Boca Raton, FL",      type:"foreup"     },
+    { id:2,  name:"Park Ridge",               location:"Lake Worth, FL",       type:"foreup"     },
+    { id:3,  name:"Okeeheelee",               location:"West Palm Beach, FL", type:"foreup"     },
+    { id:4,  name:"North Palm Beach CC",      location:"North Palm Beach, FL",type:"chronogolf" },
+    { id:6,  name:"The Florida Club",         location:"Stuart, FL",           type:"direct"     },
+    { id:8,  name:"Atlantic National",        location:"Lake Worth, FL",       type:"direct"     },
+    { id:9,  name:"Southwinds",               location:"Boca Raton, FL",      type:"foreup"     },
+    { id:10, name:"Abacoa Golf Club",         location:"Jupiter, FL",          type:"foreup"     },
+    { id:11, name:"Winston Trails Golf Club",  location:"Lake Worth, FL",       type:"chronogolf" },
+    { id:12, name:"Westchester Golf Course",  location:"Boynton Beach, FL",     type:"chronogolf" },
+    { id:13, name:"Boca Raton Golf & Racquet Club", location:"Boca Raton, FL", type:"direct"     },
+    { id:14, name:"Boynton Beach Links",      location:"Boynton Beach, FL",     type:"direct"     },
+  ];
+
+  function sortCoursesChronogolfLast(list) {
+    return list.slice().sort((a, b) => {
+      const aChrono = a.type === 'chronogolf' ? 1 : 0;
+      const bChrono = b.type === 'chronogolf' ? 1 : 0;
+      if (aChrono !== bChrono) return aChrono - bChrono;
+      return (a.id || 0) - (b.id || 0);
+    });
+  }
+  COURSES = sortCoursesChronogolfLast(COURSES);
+  document.getElementById('courseCount').textContent = COURSES.length;
+
+  // Order courses by how/when data was rendered: first-received first, then rest in list order
+  let renderOrder = [];
+  function getOrderedCourses(results) {
+    if (renderOrder.length === 0) return COURSES;
+    const received = renderOrder.map(id => COURSES.find(c => c.id === id)).filter(Boolean);
+    const notYet = COURSES.filter(c => !renderOrder.includes(c.id));
+    return [...received, ...notYet];
+  }
+
+  // Set today as default date
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth()+1).padStart(2,'0');
+  const dd = String(today.getDate()).padStart(2,'0');
+  document.getElementById('datePicker').value = `${yyyy}-${mm}-${dd}`;
+
+  // Build initial cards (order matches stream: first-loaded first)
+  function buildGrid(state='idle', results={}) {
+    const ordered = getOrderedCourses(results);
+    const grid = document.getElementById('grid');
+    grid.innerHTML = ordered.map((c, i) => {
+      const res = results[c.id];
+      const bodyHtml = renderBody(c, state, res);
+      return `
+        <div class="course-card" style="animation-delay:${i*0.04}s" id="card-${c.id}">
+          <div class="card-head">
+            <div class="card-head-left">
+              <div class="course-num">Course ${c.id}</div>
+              <div class="course-name">${c.name}</div>
+              <div class="course-loc">📍 ${c.location}</div>
+            </div>
+            <span class="card-badge ${c.type === 'foreup' ? 'badge-live' : c.type === 'chronogolf' ? 'badge-chrono' : 'badge-link'}">${c.type === 'foreup' ? 'ForeUp' : c.type === 'chronogolf' ? 'Chronogolf' : 'Book direct'}</span>
+          </div>
+          <div class="card-body" id="body-${c.id}">${bodyHtml}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderBody(course, state, result) {
+    if (state === 'idle') {
+      return `<p class="idle-msg">Select a date and click Check All Courses.</p>`;
+    }
+    if (state === 'loading') {
+      const slowNote = (course.type === 'chronogolf' || course.type === 'direct') ? ' <span style="color:var(--gold);font-size:0.72rem">(~20-45s)</span>' : '';
+      return `<div class="loading-row"><div class="spinner"></div><span>Fetching tee times…${slowNote}</span></div>`;
+    }
+    if (state === 'done' && result) {
+      return renderResult(course, result);
+    }
+    return `<p class="idle-msg">No data yet.</p>`;
+  }
+
+  function renderResult(course, result) {
+    if (result.status === 'link') {
+      return renderLinkResult(result);
+    }
+    if (result.status === 'error') {
+      return `
+        <p class="error-msg">⚠ ${result.message}</p>
+        ${bookBtn(result.booking_url)}
+      `;
+    }
+    const times = result.times || [];
+    if (times.length === 0) {
+      return `
+        <p class="no-times">No available times found for your criteria.</p>
+        ${bookBtn(result.booking_url)}
+      `;
+    }
+    const pills = times.map(t => {
+      const fee = t.green_fee ? `$${t.green_fee}` : '';
+      return `
+        <div class="time-pill">
+          <span class="t-time">${formatTime(t.time)}</span>
+          <span class="t-spots">${t.available_spots} spot${t.available_spots !== 1 ? 's' : ''}</span>
+          ${fee ? `<span class="t-fee">${fee}</span>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="times-count">Found <strong>${times.length}</strong> tee time${times.length !== 1 ? 's' : ''}</div>
+      <div class="times-grid">${pills}</div>
+      ${bookBtn(result.booking_url)}
+    `;
+  }
+
+  function renderLinkResult(result) {
+    const url = result?.booking_url || '#';
+    return `
+      <p class="idle-msg" style="margin-bottom:12px">Live lookup not available — book directly.</p>
+      ${bookBtn(url)}
+    `;
+  }
+
+  function bookBtn(url) {
+    return `
+      <a class="book-link" href="${url}" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+        Book This Course
+      </a>
+    `;
+  }
+
+  function formatTime(raw) {
+    if (!raw) return '—';
+    const s = raw.trim();
+    // Already formatted like "7:30am"
+    if (/[ap]m$/i.test(s)) return s.toLowerCase();
+    // 24h format
+    try {
+      const [h, m] = s.split(':').map(Number);
+      const period = h >= 12 ? 'pm' : 'am';
+      const h12 = h % 12 || 12;
+      return `${h12}:${String(m).padStart(2,'0')}${period}`;
+    } catch { return s; }
+  }
+
+  async function searchAll() {
+    const date = document.getElementById('datePicker').value;
+    const players = document.getElementById('playersPicker').value;
+
+    if (!date) { alert('Please select a date.'); return; }
+
+    const btn = document.getElementById('searchBtn');
+    btn.disabled = true;
+    btn.textContent = 'Searching…';
+
+    // Show status bar
+    const statusBar = document.getElementById('statusBar');
+    statusBar.classList.add('visible');
+    document.getElementById('statusText').textContent = `Checking all courses for ${formatDateDisplay(date)}… Results will appear as they load.`;
+
+    document.getElementById('summary').classList.remove('visible');
+    renderOrder = [];
+    buildGrid('loading', {});
+
+    try {
+      // Read "Before time" and always send it so server can filter (empty = no filter)
+      const beforeTimeInput = document.getElementById('beforeTime');
+      let beforeTime = (beforeTimeInput && beforeTimeInput.value) ? String(beforeTimeInput.value).trim() : '';
+      if (beforeTime && /^\d{1,2}:\d{2}/.test(beforeTime)) {
+        const parts = beforeTime.split(':');
+        const h = String(parts[0]).padStart(2, '0');
+        const m = String((parts[1] || '00').replace(/\D/g, '').slice(0, 2)).padStart(2, '0');
+        beforeTime = h + ':' + m;
+      }
+
+      let url = `${API}/api/all_teetimes_stream?date=${date}&players=${players}`;
+      url += '&before_time=' + (beforeTime ? encodeURIComponent(beforeTime) : '');
+
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const results = {};
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const { course_id, result } = JSON.parse(line);
+            if (course_id != null) {
+              results[course_id] = result;
+              if (!renderOrder.includes(course_id)) renderOrder.push(course_id);
+            }
+            buildGrid('done', results);
+            updateSummary(date, results);
+          } catch (_) {}
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const { course_id, result } = JSON.parse(buffer);
+          if (course_id != null) {
+            results[course_id] = result;
+            if (!renderOrder.includes(course_id)) renderOrder.push(course_id);
+          }
+        } catch (_) {}
+      }
+      buildGrid('done', results);
+      updateSummary(date, results);
+    } catch(err) {
+      document.getElementById('statusText').textContent = `⚠ Could not reach server. Is golf_server.py running?`;
+      const errResults = {};
+      COURSES.forEach(c => { errResults[c.id] = { status: 'error', message: 'Server not reachable', booking_url: '#' }; });
+      buildGrid('done', errResults);
+    }
+
+    statusBar.classList.remove('visible');
+    btn.disabled = false;
+    btn.textContent = 'Check All Courses →';
+  }
+
+  function updateSummary(date, results) {
+    let totalTimes = 0;
+    let coursesWithTimes = 0;
+
+    Object.values(results).forEach(r => {
+      if (r.status === 'ok' && r.times) {
+        totalTimes += r.times.length;
+        if (r.times.length > 0) coursesWithTimes++;
+      }
+    });
+
+    document.getElementById('sumTotal').textContent = totalTimes;
+    document.getElementById('sumCourses').textContent = coursesWithTimes;
+    document.getElementById('sumDate').textContent = formatDateShort(date);
+    document.getElementById('summary').classList.add('visible');
+  }
+
+  function formatDateDisplay(d) {
+    const [y,m,day] = d.split('-');
+    return new Date(y, m-1, day).toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
+  }
+
+  function formatDateShort(d) {
+    const [y,m,day] = d.split('-');
+    return new Date(y, m-1, day).toLocaleDateString('en-US', { month:'short', day:'numeric' });
+  }
+
+  // Initial render with fallback list; refresh from server when available
+  buildGrid('idle', {});
+  fetch(API + "/api/courses").then(r => r.json()).then(data => {
+    if (Array.isArray(data) && data.length) {
+      COURSES = sortCoursesChronogolfLast(data);
+      document.getElementById('courseCount').textContent = COURSES.length;
+      buildGrid('idle', {});
+    }
+  }).catch(() => {});
+</script>
+</body>
+</html>
