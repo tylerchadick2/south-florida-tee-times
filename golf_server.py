@@ -1995,28 +1995,58 @@ def _fetch_one_direct_course(course, date_iso, players, before_time=None):
 
 
 def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_course_done=None):
-    """Run all direct (GolfNow, TeeItUp, Club Caddie, Eagle Club) courses in parallel, one browser per course. Then call on_course_done as each completes."""
+    """Run all direct courses; when 1 browser at a time, run sequentially with per-course timeout so one hang doesn't block the rest."""
     if not courses:
         return
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     lock = threading.Lock()
     def _done(course_id, result):
         if on_course_done:
             with lock:
                 on_course_done(course_id, result)
-    max_workers = min(len(courses), _max_browser_workers())
-    # When running one browser at a time, allow enough time per course (Render free tier is slow)
-    timeout_direct = (90 * len(courses)) if _max_browser_workers() == 1 else 120
-    timeout_direct = max(timeout_direct, 120)
+
+    max_workers = _max_browser_workers()
+    # Per-course timeout so we never hang forever on one course (Render 512MB can cause Chrome to hang)
+    per_course_timeout = 55
+
+    if max_workers == 1:
+        # Sequential: run one course at a time with timeout so every course gets a result
+        for course in courses:
+            out = [None]
+
+            def _run():
+                try:
+                    out[0] = _fetch_one_direct_course(course, date_iso, players, before_time)
+                except Exception as e:
+                    out[0] = (course["id"], {"status": "error", "message": str(e)[:100], "booking_url": course.get("booking_url", ""), "times": []})
+
+            t = threading.Thread(target=_run)
+            t.start()
+            t.join(timeout=per_course_timeout)
+            if out[0] is not None:
+                course_id, result = out[0]
+                _done(course_id, result)
+            else:
+                _done(course["id"], {"status": "error", "message": "Timed out (%ss)" % per_course_timeout, "booking_url": course.get("booking_url", ""), "times": []})
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    max_workers = min(len(courses), max_workers)
+    timeout_direct = max(120, 60 * len(courses))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_fetch_one_direct_course, c, date_iso, players, before_time): c for c in courses}
-        for future in as_completed(futures, timeout=timeout_direct):
-            try:
-                course_id, result = future.result()
-                _done(course_id, result)
-            except Exception as e:
-                course = futures[future]
-                _done(course["id"], {"status": "error", "message": str(e)[:100], "booking_url": course.get("booking_url", ""), "times": []})
+        try:
+            for future in as_completed(futures, timeout=timeout_direct):
+                try:
+                    course_id, result = future.result(timeout=5)
+                    _done(course_id, result)
+                except Exception as e:
+                    course = futures.get(future)
+                    if course:
+                        _done(course["id"], {"status": "error", "message": str(e)[:100], "booking_url": course.get("booking_url", ""), "times": []})
+        except Exception:
+            for future, course in futures.items():
+                if not future.done():
+                    _done(course["id"], {"status": "error", "message": "Timeout or error", "booking_url": course.get("booking_url", ""), "times": []})
 
 
 def fetch_direct_eagleclub(course, date_iso, players):
@@ -2294,15 +2324,19 @@ def get_all_teetimes_stream():
         q.put((course["id"], result))
 
     def browser_worker():
-        if direct_courses:
-            def direct_done(cid, res):
+        try:
+            if direct_courses:
+                def direct_done(cid, res):
+                    q.put((cid, res))
+                fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
+            def chrono_done(cid, res):
+                if before_time and res.get("status") == "ok":
+                    res["times"] = apply_time_filter(res.get("times", []), before_time)
                 q.put((cid, res))
-            fetch_all_direct_parallel(direct_courses, date_str, players, before_time=before_time, on_course_done=direct_done)
-        def chrono_done(cid, res):
-            if before_time and res.get("status") == "ok":
-                res["times"] = apply_time_filter(res.get("times", []), before_time)
-            q.put((cid, res))
-        fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
+            fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
+        except Exception as e:
+            for c in chrono_courses:
+                q.put((c["id"], {"status": "error", "message": str(e)[:100], "booking_url": c.get("booking_url", ""), "times": []}))
 
     for c in foreup_courses:
         threading.Thread(target=course_worker, args=(c,), daemon=True).start()
