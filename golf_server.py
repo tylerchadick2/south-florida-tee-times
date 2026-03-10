@@ -795,6 +795,18 @@ def fetch_chronogolf_times(course, date_iso, players):
 # ─────────────────────────────────────────────
 # DIRECT COURSE SCRAPERS (per-site custom logic)
 # ─────────────────────────────────────────────
+def _parse_html_with_lxml(driver):
+    """Parse current page HTML with lxml (faster than many Selenium find_elements + .text round-trips). Returns root or None."""
+    try:
+        from lxml import html
+        raw = driver.page_source
+        if not raw or len(raw) < 100:
+            return None
+        return html.fromstring(raw)
+    except Exception:
+        return None
+
+
 def _selenium_get_visible_text(driver):
     """Get all visible text from the page (works for SPAs)."""
     try:
@@ -1436,41 +1448,80 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         _time.sleep(0.3)
         seen = set()
         times = []
-        # Primary: use Tee It Up DOM — each slot has p[data-testid="teetimes-tile-time"] and same tile has [data-testid="teetimes-tile-available-players"]
-        for time_el in driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']"):
+        tree = _parse_html_with_lxml(driver)
+        if tree is not None:
             try:
-                t_text = (time_el.text or "").strip()
-                if not t_text:
-                    continue
-                m = time_pat.match(t_text) or re.search(r"(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)", t_text, re.I)
-                if not m:
-                    continue
-                h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-                t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
-                key = t_str.upper().replace(" ", "")
-                if key in seen:
-                    continue
-                seen.add(key)
-                min_p, max_p = 1, 4
-                try:
-                    header = time_el.find_element(By.XPATH, "./ancestor::*[@data-testid='teetimes-tile-header-component'][1]")
-                    players_el = header.find_element(By.CSS_SELECTOR, "[data-testid='teetimes-tile-available-players']")
-                    min_p, max_p = _parse_teeitup_player_range(players_el.text)
-                except Exception:
-                    pass
-                times.append({
-                    "time": t_str,
-                    "min_players": min_p,
-                    "max_players": max_p,
-                    "available_spots": max_p,
-                    "holes": 18,
-                    "green_fee": None,
-                    "cart_fee": None,
-                    "rate_type": "",
-                    "section": "teeitup",
-                })
+                for time_node in tree.xpath("//*[@data-testid='teetimes-tile-time']"):
+                    try:
+                        t_text = (time_node.text_content() or "").strip()
+                        if not t_text:
+                            continue
+                        m = time_pat.match(t_text) or re.search(r"(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)", t_text, re.I)
+                        if not m:
+                            continue
+                        h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                        t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
+                        key = t_str.upper().replace(" ", "")
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        min_p, max_p = 1, 4
+                        try:
+                            players_nodes = time_node.xpath(".//ancestor::*[@data-testid='teetimes-tile-header-component'][1]//*[@data-testid='teetimes-tile-available-players']")
+                            if players_nodes:
+                                min_p, max_p = _parse_teeitup_player_range(players_nodes[0].text_content())
+                        except Exception:
+                            pass
+                        times.append({
+                            "time": t_str,
+                            "min_players": min_p,
+                            "max_players": max_p,
+                            "available_spots": max_p,
+                            "holes": 18,
+                            "green_fee": None,
+                            "cart_fee": None,
+                            "rate_type": "",
+                            "section": "teeitup",
+                        })
+                    except Exception:
+                        continue
             except Exception:
-                continue
+                pass
+        if not times:
+            for time_el in driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']"):
+                try:
+                    t_text = (time_el.text or "").strip()
+                    if not t_text:
+                        continue
+                    m = time_pat.match(t_text) or re.search(r"(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)", t_text, re.I)
+                    if not m:
+                        continue
+                    h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                    t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
+                    key = t_str.upper().replace(" ", "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    min_p, max_p = 1, 4
+                    try:
+                        header = time_el.find_element(By.XPATH, "./ancestor::*[@data-testid='teetimes-tile-header-component'][1]")
+                        players_el = header.find_element(By.CSS_SELECTOR, "[data-testid='teetimes-tile-available-players']")
+                        min_p, max_p = _parse_teeitup_player_range(players_el.text)
+                    except Exception:
+                        pass
+                    times.append({
+                        "time": t_str,
+                        "min_players": min_p,
+                        "max_players": max_p,
+                        "available_spots": max_p,
+                        "holes": 18,
+                        "green_fee": None,
+                        "cart_fee": None,
+                        "rate_type": "",
+                        "section": "teeitup",
+                    })
+                except Exception:
+                    continue
         # Fallback: regex scan visible body if no tiles found
         if not times:
             body = _selenium_get_visible_text(driver) or ""
@@ -1680,39 +1731,83 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
         _time.sleep(0.3)
         seen = set()
         times = []
-        for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
+        tree = _parse_html_with_lxml(driver)
+        if tree is not None:
             try:
-                for el in driver.find_elements(By.CSS_SELECTOR, selector):
-                    try:
-                        text = (el.text or "").strip()
-                        if not text or len(text) > 120:
+                # XPath equivalents (no cssselect dependency): .teetime, .itembox.tt-btn, #SlotBox button, etc.
+                xpath_list = (
+                    "//*[contains(@class, 'teetime')]",
+                    "//*[contains(@class, 'itembox') and contains(@class, 'tt-btn')]",
+                    "//*[@id='SlotBox']//button",
+                    "//*[contains(@class, 'slot-outer-box')]//button",
+                    "//*[@id='SlotBox']//*[contains(@class, 'itembox')]",
+                )
+                for xpath in xpath_list:
+                    for node in tree.xpath(xpath):
+                        try:
+                            text = (node.text_content() or "").strip()
+                            if not text or len(text) > 120:
+                                continue
+                            m = time_pat.search(text)
+                            if not m:
+                                continue
+                            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                            t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
+                            key = t_str.upper().replace(" ", "")
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            times.append({
+                                "time": t_str,
+                                "min_players": 1,
+                                "max_players": 4,
+                                "available_spots": 4,
+                                "holes": 18,
+                                "green_fee": None,
+                                "cart_fee": None,
+                                "rate_type": "",
+                                "section": "clubcaddie",
+                            })
+                        except Exception:
                             continue
-                        m = time_pat.search(text)
-                        if not m:
-                            continue
-                        h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-                        t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
-                        key = t_str.upper().replace(" ", "")
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        times.append({
-                            "time": t_str,
-                            "min_players": 1,
-                            "max_players": 4,
-                            "available_spots": 4,
-                            "holes": 18,
-                            "green_fee": None,
-                            "cart_fee": None,
-                            "rate_type": "",
-                            "section": "clubcaddie",
-                        })
-                    except Exception:
-                        continue
+                    if times:
+                        break
             except Exception:
-                continue
-            if times:
-                break
+                pass
+        if not times:
+            for selector in (".teetime", ".itembox.tt-btn", "#SlotBox button", ".slot-outer-box button", "#SlotBox .itembox"):
+                try:
+                    for el in driver.find_elements(By.CSS_SELECTOR, selector):
+                        try:
+                            text = (el.text or "").strip()
+                            if not text or len(text) > 120:
+                                continue
+                            m = time_pat.search(text)
+                            if not m:
+                                continue
+                            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                            t_str = f"{h}:{min_} {period}" if period else f"{h}:{min_}"
+                            key = t_str.upper().replace(" ", "")
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            times.append({
+                                "time": t_str,
+                                "min_players": 1,
+                                "max_players": 4,
+                                "available_spots": 4,
+                                "holes": 18,
+                                "green_fee": None,
+                                "cart_fee": None,
+                                "rate_type": "",
+                                "section": "clubcaddie",
+                            })
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+                if times:
+                    break
         if not times:
             body = _selenium_get_visible_text(driver) or ""
             for m in time_pat.finditer(body):
@@ -1930,12 +2025,19 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
 
         _time.sleep(1.5)
 
-        # 4) Parse tee time cards — checkpoint logic: only from elements that look like a slot (card with Championship/Players/$ or short time-only header)
+        # 4) Parse tee time cards — lxml first (faster), then Selenium fallback
         seen = set()
         times = []
-        for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
+        tree = _parse_html_with_lxml(driver)
+        nodes_to_scan = []
+        if tree is not None:
             try:
-                text = (el.text or "").strip()
+                nodes_to_scan = tree.xpath("//*[contains(., 'AM') or contains(., 'PM')]")
+            except Exception:
+                pass
+        for node in nodes_to_scan:
+            try:
+                text = (node.text_content() or "").strip()
                 if not text or len(text) > 250:
                     continue
                 m = time_pat.search(text)
@@ -1973,6 +2075,47 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 })
             except Exception:
                 continue
+        if not times and tree is None:
+            for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
+                try:
+                    text = (el.text or "").strip()
+                    if not text or len(text) > 250:
+                        continue
+                    m = time_pat.search(text)
+                    if not m:
+                        continue
+                    if "Filter Options" in text or ("Reset" in text and "Time" in text) or ("7AM" in text and "6PM" in text):
+                        continue
+                    h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                    t_str = f"{int(h)}:{min_} {period}"
+                    key = t_str.upper().replace(" ", "")
+                    if key in seen:
+                        continue
+                    is_card = "championship" in text.lower() or "player" in text.lower() or "$" in text
+                    is_header_only = len(text) < 25 and time_pat.search(text)
+                    if not is_card and not is_header_only:
+                        continue
+                    seen.add(key)
+                    price_match = price_pat.search(text)
+                    green_fee = None
+                    if price_match:
+                        try:
+                            green_fee = float(price_match.group(0).replace("$", "").replace(",", ""))
+                        except Exception:
+                            pass
+                    times.append({
+                        "time": t_str,
+                        "min_players": 1,
+                        "max_players": 4,
+                        "available_spots": 4,
+                        "holes": 18,
+                        "green_fee": green_fee,
+                        "cart_fee": None,
+                        "rate_type": "",
+                        "section": "eagleclub",
+                    })
+                except Exception:
+                    continue
 
         # Sort by time and dedupe by key
         def _time_key(t):
