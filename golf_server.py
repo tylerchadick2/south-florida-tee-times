@@ -1698,12 +1698,12 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         driver.get(base)
         # Wait for SPA to be ready (Render can be slower than local)
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter') or contains(., 'Time')]"))
+            WebDriverWait(driver, 7).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter') or contains(., 'Time') or contains(., 'AM') or contains(., 'PM')]"))
             )
         except Exception:
             pass
-        _time.sleep(0.8)
+        _time.sleep(0.5)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
         target_mm_dd = None
@@ -1824,46 +1824,75 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         except Exception:
             pass
 
-        # Wait for tee time grid to refresh (critical on Render — grid loads after course select)
+        # Wait for any tee-time-like content (loose: any element with a time and reasonable length)
         def _has_tee_card(d):
             try:
                 for el in d.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
                     txt = (el.text or "").strip()
-                    if len(txt) < 250 and ("championship" in txt.lower() or "$" in txt):
+                    if 5 <= len(txt) <= 400 and time_pat.search(txt):
                         return True
             except Exception:
                 pass
             return False
         try:
-            WebDriverWait(driver, 8).until(_has_tee_card)
+            WebDriverWait(driver, 10).until(_has_tee_card)
         except Exception:
             pass
-        _time.sleep(0.5)
+        _time.sleep(0.4)
 
-        # 4) Parse tee time cards — grid of cards: green header with time (e.g. "10:52 AM"), body with Championship, price, "4 Players"
+        # 4) Parse tee time cards — fast path: get times from visible body first (works even when DOM structure differs)
         seen = set()
         times = []
-        # Find all elements that contain a time (card header or whole card)
+        body = _selenium_get_visible_text(driver) or ""
+        for m in time_pat.finditer(body):
+            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+            t_str = f"{int(h)}:{min_} {period}"
+            key = t_str.upper().replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+            times.append({
+                "time": t_str,
+                "min_players": 1,
+                "max_players": 4,
+                "available_spots": 4,
+                "holes": 18,
+                "green_fee": None,
+                "cart_fee": None,
+                "rate_type": "",
+                "section": "eagleclub",
+            })
+        # If body parse got enough times, return quickly (fast path)
+        if len(times) >= 3:
+            def _time_key(t):
+                s = t.get("time") or ""
+                m = time_pat.search(s)
+                if not m:
+                    return (99, 99)
+                h, min_, period = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+                if "PM" in period and h != 12:
+                    h += 12
+                elif "AM" in period and h == 12:
+                    h = 0
+                return (h, min_)
+            times.sort(key=_time_key)
+            return {"status": "ok", "times": times[:120], "booking_url": booking_url}
+
+        # Element-by-element parse (for price extraction / when body had few matches)
         for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
             try:
                 text = (el.text or "").strip()
-                if not text or len(text) > 250:
+                if not text or len(text) > 280:
                     continue
                 m = time_pat.search(text)
                 if not m:
                     continue
-                # Reject sidebar / filter controls
                 if "Filter Options" in text or ("Reset" in text and "Time" in text) or ("7AM" in text and "6PM" in text):
                     continue
                 h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
                 t_str = f"{int(h)}:{min_} {period}"
                 key = t_str.upper().replace(" ", "")
                 if key in seen:
-                    continue
-                # Accept if it looks like a tee slot: has time and (Championship or Players or $) or is a short time-only block (card header)
-                is_card = "championship" in text.lower() or "player" in text.lower() or "$" in text
-                is_header_only = len(text) < 25 and time_pat.search(text)
-                if not is_card and not is_header_only:
                     continue
                 seen.add(key)
                 price_match = price_pat.search(text)
