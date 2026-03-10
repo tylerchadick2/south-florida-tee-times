@@ -289,6 +289,12 @@ def _get_driver():
     options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument("--window-size=1280,900")
     options.add_argument("--log-level=3")
+    # Reduce memory use on small hosts (e.g. Render free tier)
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-sync")
+    options.add_argument("--disable-translate")
+    options.add_argument("--no-first-run")
     options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     options.page_load_strategy = "eager"
@@ -443,9 +449,11 @@ def fetch_all_chronogolf(courses, date_iso, players, on_course_done=None):
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         max_workers = min(len(courses), _max_browser_workers())
+        timeout_chrono = (90 * len(courses)) if _max_browser_workers() == 1 else 90
+        timeout_chrono = max(timeout_chrono, 90)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_fetch_one_chronogolf_course, c, date_iso, players): c for c in courses}
-            for future in as_completed(futures, timeout=90):
+            for future in as_completed(futures, timeout=timeout_chrono):
                 try:
                     course_id, result = future.result()
                     _store(course_id, result)
@@ -1945,9 +1953,12 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
             with lock:
                 on_course_done(course_id, result)
     max_workers = min(len(courses), _max_browser_workers())
+    # When running one browser at a time, allow enough time per course (Render free tier is slow)
+    timeout_direct = (90 * len(courses)) if _max_browser_workers() == 1 else 120
+    timeout_direct = max(timeout_direct, 120)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_fetch_one_direct_course, c, date_iso, players, before_time): c for c in courses}
-        for future in as_completed(futures, timeout=120):
+        for future in as_completed(futures, timeout=timeout_direct):
             try:
                 course_id, result = future.result()
                 _done(course_id, result)
@@ -2191,10 +2202,11 @@ def get_all_teetimes():
     browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
 
-    # Wait for all
+    # Wait for all (allow enough time when running one browser at a time on slow hosts)
     for t in foreup_threads:
         t.join(timeout=15)
-    browser_thread.join(timeout=180)
+    browser_join = max(180, 90 * (len(direct_courses) + len(chrono_courses))) if _max_browser_workers() == 1 else 180
+    browser_thread.join(timeout=browser_join)
 
     results.update(chrono_results)
 
@@ -2249,7 +2261,7 @@ def get_all_teetimes_stream():
     def generate():
         for _ in range(total):
             try:
-                course_id, result = q.get(timeout=200)
+                course_id, result = q.get(timeout=600)
                 # #region agent log
                 _debug_log("stream:yield", "result", {"course_id": course_id, "status": result.get("status"), "len_times": len(result.get("times", [])), "message": result.get("message"), "first_times": [t.get("time") for t in result.get("times", [])[:5]]}, "stream")
                 # #endregion
