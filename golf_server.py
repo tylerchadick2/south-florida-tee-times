@@ -274,7 +274,10 @@ def _foreup_time_to_str(raw):
 
 
 # ─────────────────────────────────────────────
-# CHRONOGOLF - Selenium with single shared browser
+# CHRONOGOLF - Selenium (network intercept for API response)
+# API evaluation: Chronogolf has no public API; frontend calls internal XHR (we intercept in browser).
+# To switch to HTTP: capture exact API URL from DevTools (Network tab) when loading a club page,
+# then try requests.get with same query (date, groupSize); may need cookies/Referer from first load.
 # ─────────────────────────────────────────────
 
 CHRONOGOLF_HEADERS = {
@@ -1374,7 +1377,7 @@ def fetch_all_direct_golfnow(courses, date_iso, players, before_time=None, on_co
 
 # ─────────────────────────────────────────────
 # Tee It Up (Florida Club) — the-florida-club.book.teeitup.golf
-# DOM: MUI cards; time in p[data-testid="teetimes-tile-time"], players in [data-testid="teetimes-tile-available-players"] (same tile header).
+# DOM: MUI cards; time in p[data-testid="teetimes-tile-time"]. No public API; would need to capture XHR from DevTools to try HTTP.
 # ─────────────────────────────────────────────
 def _parse_teeitup_player_range(text):
     """Parse Tee It Up 'available players' text: '1', '1 or 2', '1 - 4' -> (min, max)."""
@@ -1540,8 +1543,96 @@ def fetch_all_direct_teeitup(courses, date_iso, players, before_time=None, on_co
 
 # ─────────────────────────────────────────────
 # Club Caddie (Boca Raton Golf & Racquet) — apimanager-cc22.clubcaddie.com
-# DOM: #SlotBox.slot-outer-box, .teetime .itembox.tt-btn; slots loaded via JS after page load.
+# API: /webapi/view/{slug}/slots returns JSON (try HTTP first). Fallback: Selenium DOM.
 # ─────────────────────────────────────────────
+CLUBCADDIE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/html, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _fetch_direct_clubcaddie_via_api(course, date_iso, players):
+    """Try to get Club Caddie tee times via HTTP GET (same URL as the widget). Returns result dict or None to fall back to Selenium."""
+    base = (course.get("scrape_url") or course.get("booking_url", "")).strip()
+    if not base:
+        return None
+    try:
+        parts = date_iso.split("-")
+        if len(parts) != 3:
+            return None
+        date_mmddyyyy = f"{parts[1]}/{parts[2]}/{parts[0]}"
+    except Exception:
+        return None
+    interaction = course.get("clubcaddie_interaction") or ""
+    if not interaction:
+        return None
+    player = max(1, min(4, int(players) if players else 4))
+    url = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
+    booking_url_with_date = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
+    try:
+        resp = requests.get(url, headers=CLUBCADDIE_HEADERS, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    times = []
+    time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
+    seen = set()
+
+    def process_item(item):
+        if not isinstance(item, dict):
+            return
+        raw_time = (item.get("start_time") or item.get("time") or item.get("tee_time") or
+                    item.get("display_time") or item.get("hour") or "")
+        if not raw_time:
+            return
+        raw_str = str(raw_time).strip()
+        m = time_pat.search(raw_str)
+        if not m:
+            if ":" in raw_str and ("am" in raw_str.lower() or "pm" in raw_str.lower()):
+                t_str = raw_str
+            else:
+                return
+        else:
+            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+            t_str = f"{int(h)}:{min_} {period}"
+        key = t_str.upper().replace(" ", "")
+        if key in seen:
+            return
+        seen.add(key)
+        times.append({
+            "time": t_str,
+            "min_players": 1,
+            "max_players": 4,
+            "available_spots": 4,
+            "holes": 18,
+            "green_fee": item.get("price") or item.get("green_fee"),
+            "cart_fee": item.get("cart_fee"),
+            "rate_type": "",
+            "section": "clubcaddie",
+        })
+
+    if isinstance(data, list):
+        for item in data:
+            process_item(item)
+    elif isinstance(data, dict):
+        for key in ("slots", "tee_times", "teeTimes", "data", "record", "items", "times"):
+            if key in data and isinstance(data[key], list):
+                for item in data[key]:
+                    process_item(item)
+                break
+        else:
+            process_item(data)
+    if isinstance(data, (dict, list)):
+        return {
+            "status": "ok",
+            "times": times[:120],
+            "booking_url": booking_url_with_date,
+        }
+    return None
+
+
 def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
     """Load Club Caddie slots page with date and player count, wait for JS to render slots, collect times from DOM."""
     from selenium.webdriver.common.by import By
@@ -1690,8 +1781,7 @@ def fetch_all_direct_clubcaddie(courses, date_iso, players, before_time=None, on
 
 # ─────────────────────────────────────────────
 # Eagle Club (Boynton Beach Links) — player.eagleclubsystems.online
-# UI: Filter Options sidebar (Players = buttons 1/2/3/4, Choose Course = dropdown).
-# Main area: horizontal date cards (e.g. "Sat 03/14"), then grid of tee time cards (green header = time, body = price, "4 Players").
+# SPA; no known public API. Would need to inspect Network tab for tee-slot API to try HTTP.
 # ─────────────────────────────────────────────
 def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     """Eagle Club: load page, click date card for target date, click player count (1-4), set dropdown to Championship, parse tee time cards."""
@@ -1929,11 +2019,23 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
 
 
 def _fetch_one_direct_course(course, date_iso, players, before_time=None):
-    """Fetch one direct course (GolfNow, TeeItUp, Club Caddie, or Eagle Club) with its own browser. Returns (course_id, result)."""
+    """Fetch one direct course (GolfNow, TeeItUp, Club Caddie, or Eagle Club). Club Caddie tries HTTP API first."""
     driver = None
+    scraper = course.get("direct_scraper") or ""
+    # Club Caddie: try HTTP API first (same URL as widget; no browser needed)
+    if scraper == "clubcaddie":
+        result = _fetch_direct_clubcaddie_via_api(course, date_iso, players)
+        if result is not None:
+            result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
+            if before_time and result.get("status") == "ok":
+                result["times"] = apply_time_filter(result.get("times", []), before_time)
+            if result.get("status") == "ok" and result.get("times"):
+                for t in result["times"]:
+                    if t.get("time"):
+                        t["time"] = _normalize_tee_time_display(t["time"])
+            return (course["id"], result)
     try:
         driver = _get_driver()
-        scraper = course.get("direct_scraper") or ""
         if scraper == "golfnow":
             result = _fetch_direct_golfnow_with_driver(driver, course, date_iso, players)
         elif scraper == "teeitup":
