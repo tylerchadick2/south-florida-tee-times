@@ -2017,11 +2017,11 @@ def fetch_all_direct_clubcaddie(courses, date_iso, players, before_time=None, on
 
 
 # ─────────────────────────────────────────────
-# Eagle Club (Boynton Beach Links) — player.eagleclubsystems.online
-# SPA; no known public API. Would need to inspect Network tab for tee-slot API to try HTTP.
+# Eagle Club (Boynton Beach Links) — same pattern as Boca: load, wait for content, parse
+# Nuances: must set date, players, and Championship course before waiting for grid.
 # ─────────────────────────────────────────────
 def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
-    """Eagle Club: load page, click date card for target date, click player count (1-4), set dropdown to Championship, parse tee time cards."""
+    """Eagle Club: like Boca — load, wait for Filter, set date/players/Championship, wait for grid, parse."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait, Select as SelSelect
     from selenium.webdriver.support import expected_conditions as EC
@@ -2033,7 +2033,6 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     if not base:
         return {"status": "error", "message": "No Eagle Club URL", "booking_url": "", "times": []}
     booking_url = base
-    # Match "10:52 AM" or "01:45 PM" in card headers
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     price_pat = re.compile(r"\$[\d,.]+")
     try:
@@ -2041,145 +2040,89 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         _request_log(f"Eagle Club (Boynton) start id={course.get('id')}")
         driver.get(base)
         _log_timing("page load", t0, name)
-        # Wait for SPA (Filter Options) — minimal wait so Boynton runs close to Boca speed
+        # 1) Wait for Filter (like Boca: one wait + one sleep)
         t1 = _time.monotonic()
-        wait_filter = 6 if _is_render() else 8
+        wait_filter = 12 if _is_render() else 10
         try:
             WebDriverWait(driver, wait_filter).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
             )
         except Exception:
             pass
-        _time.sleep(0.4)
-        _log_timing("wait for Filter + sleep", t1, name)
+        _time.sleep(1.0 if _is_render() else 0.8)
+        _log_timing("wait for Filter", t1, name)
 
-        # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
+        # 2) Set date, players, course — minimal sleeps (like Boca: we just need UI to accept clicks)
         target_mm_dd = None
-        target_day_abbr = None
         try:
             parts = date_iso.split("-")
             if len(parts) == 3:
-                y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-                target_mm_dd = f"{m:02d}/{d:02d}"
-                target_day_abbr = _dt.date(y, m, d).strftime("%a")  # Mon, Tue, ...
+                target_mm_dd = f"{int(parts[1]):02d}/{int(parts[2]):02d}"
         except Exception:
             pass
-
-        # 1) Set date — click the date CARD that matches target (horizontal strip: "Tue 03/10", "Wed 03/11", ...)
-        t_date = _time.monotonic()
         if target_mm_dd:
-            try:
-                # Prefer: clickable element whose text contains MM/DD (e.g. "Sat 03/14")
-                for el in driver.find_elements(By.XPATH, "//*[contains(., '%s')]" % target_mm_dd):
-                    try:
-                        t = (el.text or "").strip()
-                        if target_mm_dd not in t or "Time" in t or "Filter" in t:
-                            continue
-                        if not el.is_displayed():
-                            continue
-                        # Avoid clicking the big "Saturday, 03/14/2026" label; prefer the small card
-                        if len(t) > 20 and target_mm_dd in t and ("/" in t.replace(target_mm_dd, "", 1)):
-                            continue
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        _time.sleep(0.15)
-                        ActionChains(driver).move_to_element(el).click().perform()
-                        _time.sleep(0.4)
-                        break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-        _log_timing("date click", t_date, name)
-
-        # 2) Set number of players — Filter Options: buttons "ANY", "1", "2", "3", "4"; click the number
-        t2 = _time.monotonic()
-        players_val = max(1, min(4, int(players) if players else 4))
-        try:
-            num = str(players_val)
-            candidates = driver.find_elements(
-                By.XPATH,
-                "//*[normalize-space(text())='%s' and (self::button or self::a or self::div or self::span)]" % num
-            )
-            for el in candidates:
+            for el in driver.find_elements(By.XPATH, "//*[contains(., '%s')]" % target_mm_dd):
                 try:
-                    if not el.is_displayed():
+                    t = (el.text or "").strip()
+                    if target_mm_dd not in t or "Time" in t or "Filter" in t or not el.is_displayed():
                         continue
-                    # Skip if this is part of a date (e.g. "03/14") or other control
-                    parent_text = ""
-                    try:
-                        parent = el.find_element(By.XPATH, "./..")
-                        parent_text = (parent.get_attribute("innerText") or "").lower()
-                    except Exception:
-                        pass
-                    if "player" not in parent_text and "filter" not in parent_text:
-                        try:
-                            grand = el.find_element(By.XPATH, "./../..")
-                            if "player" not in (grand.get_attribute("innerText") or "").lower():
-                                continue
-                        except Exception:
-                            continue
+                    if len(t) > 20 and "/" in t.replace(target_mm_dd, "", 1):
+                        continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.1)
-                    el.click()
-                    _time.sleep(0.35)
+                    _time.sleep(0.2)
+                    ActionChains(driver).move_to_element(el).click().perform()
+                    _time.sleep(0.5)
                     break
                 except Exception:
                     continue
+        players_val = max(1, min(4, int(players) if players else 4))
+        num = str(players_val)
+        for el in driver.find_elements(By.XPATH, "//*[normalize-space(text())='%s']" % num):
+            try:
+                if not el.is_displayed():
+                    continue
+                parent_text = (el.find_element(By.XPATH, "./..").get_attribute("innerText") or "").lower()
+                if "player" not in parent_text and "filter" not in parent_text:
+                    continue
+                el.click()
+                _time.sleep(0.5)
+                break
+            except Exception:
+                continue
+        chosen = None
+        try:
+            for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
+                if not sel_el.is_displayed():
+                    continue
+                for opt in sel_el.find_elements(By.TAG_NAME, "option"):
+                    t = (opt.text or "").strip().lower()
+                    if "back" in t:
+                        continue
+                    if t == "championship" or (t and "championship" in t):
+                        chosen = opt.text.strip()
+                        break
+                if chosen:
+                    SelSelect(sel_el).select_by_visible_text(chosen)
+                    break
         except Exception:
             pass
-        _log_timing("players click", t2, name)
-
-        # 3) Choose Course — dropdown: select "Championship" only (not "Championship Back")
-        t3 = _time.monotonic()
-        try:
-            # Native <select>: pick option whose text is exactly "Championship" (exclude "Championship Back")
-            for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
+        if not chosen:
+            for el in driver.find_elements(By.XPATH, "//*[contains(translate(., 'CHAMPIONSHIP', 'championship'), 'championship')]"):
                 try:
-                    if not sel_el.is_displayed():
+                    if not el.is_displayed() or "back" in (el.text or "").lower():
                         continue
-                    opts = sel_el.find_elements(By.TAG_NAME, "option")
-                    chosen = None
-                    for opt in opts:
-                        t = (opt.text or "").strip().lower()
-                        if "back" in t:
-                            continue
-                        if t == "championship":
-                            chosen = opt.text.strip()
-                            break
-                        if t and "championship" in t and chosen is None:
-                            chosen = opt.text.strip()
-                    if chosen:
-                        SelSelect(sel_el).select_by_visible_text(chosen)
-                        _time.sleep(0.35)
-                        break
+                    t = (el.text or "").strip().lower()
+                    if t != "championship" and not (t.startswith("championship") and len(t) < 35):
+                        continue
+                    el.click()
+                    break
                 except Exception:
                     continue
-            else:
-                # Custom dropdown: click the option that is Championship (exact or "Championship Course"), not "Championship Back"
-                for el in driver.find_elements(By.XPATH, "//*[contains(translate(., 'CHAMPIONSHIP', 'championship'), 'championship')]"):
-                    try:
-                        if not el.is_displayed():
-                            continue
-                        t = (el.text or "").strip().lower()
-                        if "back" in t:
-                            continue
-                        if t != "championship" and not (t.startswith("championship") and len(t) < 35):
-                            continue
-                        tag = el.tag_name.lower()
-                        if tag in ("button", "div", "span", "a", "li"):
-                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            _time.sleep(0.1)
-                            el.click()
-                            _time.sleep(0.35)
-                            break
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        _log_timing("course dropdown", t3, name)
+        _time.sleep(0.5)
 
-        # Wait for Championship grid to render (SPA can take a moment after dropdown)
-        def _has_championship_card(d):
+        # 3) Wait for tee time grid (same pattern as Boca: one WebDriverWait + one sleep)
+        t1_grid = _time.monotonic()
+        def _has_tee_times(d):
             try:
                 for el in d.find_elements(By.XPATH, "//*[contains(., 'Championship') and (contains(., 'AM') or contains(., 'PM'))]"):
                     if el.is_displayed():
@@ -2189,73 +2132,32 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             except Exception:
                 pass
             return False
+        wait_slots = 18 if _is_render() else 12
         try:
-            WebDriverWait(driver, 10).until(_has_championship_card)
+            WebDriverWait(driver, wait_slots).until(_has_tee_times)
         except Exception:
             pass
-        _time.sleep(1.0)
+        _time.sleep(1.0 if _is_render() else 0.5)
+        _log_timing("wait for grid", t1_grid, name)
 
-        # 4) Parse tee time cards — Selenium only, visible elements only (Championship grid after dropdown)
-        t4 = _time.monotonic()
+        # 4) Parse — same pattern as Boca: lxml first, then Selenium fallback; one rule: has time + (Championship or player or $), no back
+        t2 = _time.monotonic()
         seen = set()
         times = []
-        for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
-            try:
-                if not el.is_displayed():
-                    continue
-                text = (el.text or "").strip()
-                if not text or len(text) > 250:
-                    continue
-                m = time_pat.search(text)
-                if not m:
-                    continue
-                if "Filter Options" in text or ("Reset" in text and "Time" in text) or ("7AM" in text and "6PM" in text):
-                    continue
-                text_lower = text.lower()
-                if "back" in text_lower:
-                    continue
-                is_card = "championship" in text_lower or "player" in text_lower or "$" in text
-                is_header_only = len(text) < 25 and time_pat.search(text)
-                if not is_card and not is_header_only:
-                    continue
-                h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-                t_str = f"{int(h)}:{min_} {period}"
-                key = t_str.upper().replace(" ", "")
-                if key in seen:
-                    continue
-                seen.add(key)
-                price_match = price_pat.search(text)
-                green_fee = None
-                if price_match:
-                    try:
-                        green_fee = float(price_match.group(0).replace("$", "").replace(",", ""))
-                    except Exception:
-                        pass
-                times.append({
-                    "time": t_str,
-                    "min_players": 1,
-                    "max_players": 4,
-                    "available_spots": 4,
-                    "holes": 18,
-                    "green_fee": green_fee,
-                    "cart_fee": None,
-                    "rate_type": "",
-                    "section": "eagleclub",
-                })
-            except Exception:
-                continue
-
-        # Fallback: if no times, look for elements that explicitly contain "Championship" + time (grid may be different structure)
-        if not times:
-            for el in driver.find_elements(By.XPATH, "//*[contains(., 'Championship') and (contains(., 'AM') or contains(., 'PM'))]"):
+        tree = _parse_html_with_lxml(driver)
+        if tree is not None:
+            for node in tree.xpath("//*[contains(., 'AM') or contains(., 'PM')]"):
                 try:
-                    if not el.is_displayed():
+                    text = (node.text_content() or "").strip()
+                    if not text or len(text) > 300:
                         continue
-                    text = (el.text or "").strip()
-                    if not text or len(text) > 400:
+                    if "Filter Options" in text or ("7AM" in text and "6PM" in text):
                         continue
                     if "back" in text.lower():
                         continue
+                    if "championship" not in text.lower() and "player" not in text.lower() and "$" not in text:
+                        continue
+                    price_m = price_pat.search(text)
                     for m in time_pat.finditer(text):
                         h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
                         t_str = f"{int(h)}:{min_} {period}"
@@ -2263,11 +2165,10 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         if key in seen:
                             continue
                         seen.add(key)
-                        price_match = price_pat.search(text)
                         green_fee = None
-                        if price_match:
+                        if price_m:
                             try:
-                                green_fee = float(price_match.group(0).replace("$", "").replace(",", ""))
+                                green_fee = float(price_m.group(0).replace("$", "").replace(",", ""))
                             except Exception:
                                 pass
                         times.append({
@@ -2283,8 +2184,43 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         })
                 except Exception:
                     continue
+        if not times:
+            for el in driver.find_elements(By.XPATH, "//*[contains(., 'Championship') and (contains(., 'AM') or contains(., 'PM'))]"):
+                try:
+                    if not el.is_displayed():
+                        continue
+                    text = (el.text or "").strip()
+                    if not text or len(text) > 300 or "back" in text.lower():
+                        continue
+                    for m in time_pat.finditer(text):
+                        h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                        t_str = f"{int(h)}:{min_} {period}"
+                        key = t_str.upper().replace(" ", "")
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        green_fee = None
+                        pm = price_pat.search(text)
+                        if pm:
+                            try:
+                                green_fee = float(pm.group(0).replace("$", "").replace(",", ""))
+                            except Exception:
+                                pass
+                        times.append({
+                            "time": t_str,
+                            "min_players": 1,
+                            "max_players": 4,
+                            "available_spots": 4,
+                            "holes": 18,
+                            "green_fee": green_fee,
+                            "cart_fee": None,
+                            "rate_type": "",
+                            "section": "eagleclub",
+                        })
+                except Exception:
+                    continue
+        _log_timing("parse", t2, name)
 
-        # Sort by time and dedupe by key
         def _time_key(t):
             s = t.get("time") or ""
             m = time_pat.search(s)
@@ -2296,18 +2232,18 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             elif "AM" in period and h == 12:
                 h = 0
             return (h, min_)
-
         times.sort(key=_time_key)
-        _log_timing("parse tee cards", t4, name)
         total_eagle = _time.monotonic() - t0
         if times:
             _request_log(f"Eagle Club (Boynton) done in {total_eagle:.1f}s — {len(times)} times")
             return {"status": "ok", "times": times[:120], "booking_url": booking_url}
-
         _request_log(f"Eagle Club (Boynton) done in {total_eagle:.1f}s — no tee times found")
         return {"status": "error", "message": "No tee times found", "booking_url": booking_url, "times": []}
     except Exception as e:
-        total_eagle = _time.monotonic() - t0
+        try:
+            total_eagle = _time.monotonic() - t0
+        except Exception:
+            total_eagle = 0
         _request_log(f"Eagle Club (Boynton) error in {total_eagle:.1f}s — {str(e)[:80]}")
         return {"status": "error", "message": str(e)[:120], "booking_url": base, "times": []}
 
