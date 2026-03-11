@@ -115,14 +115,8 @@ COURSES = [
         "schedule_id": "7480",
         "booking_url": "https://app.foreupsoftware.com/index.php/booking/21263/7480#teetimes",
     },
-    {
-        "id": 4,
-        "name": "North Palm Beach CC",
-        "location": "North Palm Beach, FL",
-        "type": "chronogolf",
-        "chronogolf_slug": "north-palm-beach-country-club",
-        "booking_url": "https://www.chronogolf.com/club/north-palm-beach-country-club",
-    },
+    # Chronogolf disabled – was id 4 North Palm Beach CC
+    # { "id": 4, "name": "North Palm Beach CC", "location": "North Palm Beach, FL", "type": "chronogolf", "chronogolf_slug": "north-palm-beach-country-club", "booking_url": "https://www.chronogolf.com/club/north-palm-beach-country-club" },
     {
         "id": 6,
         "name": "The Florida Club",
@@ -161,22 +155,9 @@ COURSES = [
         "schedule_id": "3710",
         "booking_url": "https://app.foreupsoftware.com/index.php/booking/20120/3710#teetimes",
     },
-    {
-        "id": 11,
-        "name": "Winston Trails Golf Club",
-        "location": "Lake Worth, FL",
-        "type": "chronogolf",
-        "chronogolf_slug": "winston-trails-golf-club",
-        "booking_url": "https://www.chronogolf.com/club/winston-trails-golf-club",
-    },
-    {
-        "id": 12,
-        "name": "Westchester Golf Course",
-        "location": "Boynton Beach, FL",
-        "type": "chronogolf",
-        "chronogolf_slug": "westchester-country-club",
-        "booking_url": "https://www.chronogolf.com/club/westchester-country-club",
-    },
+    # Chronogolf disabled – was id 11 Winston Trails, id 12 Westchester
+    # { "id": 11, "name": "Winston Trails Golf Club", "location": "Lake Worth, FL", "type": "chronogolf", "chronogolf_slug": "winston-trails-golf-club", "booking_url": "https://www.chronogolf.com/club/winston-trails-golf-club" },
+    # { "id": 12, "name": "Westchester Golf Course", "location": "Boynton Beach, FL", "type": "chronogolf", "chronogolf_slug": "westchester-country-club", "booking_url": "https://www.chronogolf.com/club/westchester-country-club" },
     {
         "id": 13,
         "name": "Boca Raton Golf & Racquet Club",
@@ -397,6 +378,7 @@ def _chronogolf_wait_any_slot(driver, timeout=1.0, poll=0.05):
     return (None, False)
 
 
+# ----- CHRONOGOLF DISABLED: functions below are not called; left in place to re-enable later -----
 def _fetch_one_chronogolf_course(course, date_iso, players):
     """
     Fetch tee times for a single Chronogolf course using its own browser.
@@ -2561,8 +2543,8 @@ def fetch_course(course, date_iso, players, before_time=None):
 
     if course["type"] == "foreup":
         result = fetch_foreup_times(course, foreup_date, players)
-    elif course["type"] == "chronogolf":
-        result = fetch_chronogolf_times(course, date_iso, players)
+    # elif course["type"] == "chronogolf":
+    #     result = fetch_chronogolf_times(course, date_iso, players)
     elif course["type"] == "direct":
         result = fetch_direct_times(course, date_iso, players, before_time)
     else:
@@ -2621,11 +2603,8 @@ def get_all_teetimes():
     lock = threading.Lock()
 
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
-    # Run Winston Trails and Westchester first among Chronogolf so they don't hit the end of timeout
-    chrono_courses = sorted(
-        [c for c in COURSES if c["type"] == "chronogolf"],
-        key=lambda c: (0 if c["id"] in (11, 12) else 1, c["id"]),
-    )
+    # Chronogolf disabled – optimize ForeUp + direct only
+    chrono_courses = []  # was: sorted([c for c in COURSES if c["type"] == "chronogolf"], ...)
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
     # Boynton Beach Links (id=14) should run last overall so slow behavior never blocks other results.
     boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
@@ -2651,11 +2630,11 @@ def get_all_teetimes():
                 with lock:
                     results[cid] = res
             fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
-        r = fetch_all_chronogolf(chrono_courses, date_str, players)
-        if before_time:
-            for cid, res in r.items():
-                if res.get("status") == "ok":
-                    res["times"] = apply_time_filter(res.get("times", []), before_time)
+        # Chronogolf disabled
+        # r = fetch_all_chronogolf(chrono_courses, date_str, players)
+        # if before_time: ...
+        # chrono_results.update(r)
+        r = {}
         with lock:
             chrono_results.update(r)
         if boynton_course:
@@ -2693,7 +2672,7 @@ def get_all_teetimes_stream():
         return jsonify({"status": "error", "message": "Missing date"}), 400
 
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
-    chrono_courses = sorted([c for c in COURSES if c["type"] == "chronogolf"], key=lambda c: (0 if c["id"] in (11, 12) else 1, c["id"]))
+    chrono_courses = []  # Chronogolf disabled
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
     boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
     direct_non_boynton = [c for c in direct_courses if c["id"] != 14]
@@ -2712,12 +2691,9 @@ def get_all_teetimes_stream():
                     q.put((cid, res))
                 fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
 
-            # 2) Then stream Chronogolf results (second to last).
-            def chrono_done(cid, res):
-                if before_time and res.get("status") == "ok":
-                    res["times"] = apply_time_filter(res.get("times", []), before_time)
-                q.put((cid, res))
-            fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
+            # 2) Chronogolf disabled – was: fetch_all_chronogolf(chrono_courses, ...)
+            # def chrono_done(cid, res): ...
+            # fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
 
             # 3) Stream Boynton Beach Links last so it never delays other courses.
             if boynton_course:
@@ -2725,8 +2701,8 @@ def get_all_teetimes_stream():
                     q.put((cid, res))
                 fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
         except Exception as e:
-            for c in chrono_courses:
-                q.put((c["id"], {"status": "error", "message": str(e)[:100], "booking_url": c.get("booking_url", ""), "times": []}))
+            # Chronogolf disabled – no chrono_courses to push
+            pass
 
     for c in foreup_courses:
         threading.Thread(target=course_worker, args=(c,), daemon=True).start()
@@ -2793,10 +2769,9 @@ if __name__ == "__main__":
     print("━" * 44)
     check_dependencies()
     n_fore = len([c for c in COURSES if c["type"] == "foreup"])
-    n_chrono = len([c for c in COURSES if c["type"] == "chronogolf"])
     n_direct = len([c for c in COURSES if c["type"] == "direct"])
     print(f"   ForeUp courses    ({n_fore}) → ~1-3s each")
-    print(f"   Chronogolf courses ({n_chrono}) → ~2-5s each")
+    # print(f"   Chronogolf courses (disabled)")
     if n_direct:
         print(f"   Direct-book only  ({n_direct}) → link to course site")
     w = _max_browser_workers()

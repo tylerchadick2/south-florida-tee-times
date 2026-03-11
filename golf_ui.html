@@ -460,29 +460,21 @@
   const API = typeof window !== "undefined" && window.location && window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost"
     ? "" : "http://127.0.0.1:5000";
 
-  // Fallback list if API not reachable; otherwise loaded from /api/courses
+  // Fallback list if API not reachable; otherwise loaded from /api/courses (Chronogolf removed)
   let COURSES = [
     { id:1,  name:"Osprey Pointe",             location:"Boca Raton, FL",      type:"foreup"     },
     { id:2,  name:"Park Ridge",               location:"Lake Worth, FL",       type:"foreup"     },
     { id:3,  name:"Okeeheelee",               location:"West Palm Beach, FL", type:"foreup"     },
-    { id:4,  name:"North Palm Beach CC",      location:"North Palm Beach, FL",type:"chronogolf" },
     { id:6,  name:"The Florida Club",         location:"Stuart, FL",           type:"direct"     },
     { id:8,  name:"Atlantic National",        location:"Lake Worth, FL",       type:"direct"     },
     { id:9,  name:"Southwinds",               location:"Boca Raton, FL",      type:"foreup"     },
     { id:10, name:"Abacoa Golf Club",         location:"Jupiter, FL",          type:"foreup"     },
-    { id:11, name:"Winston Trails Golf Club",  location:"Lake Worth, FL",       type:"chronogolf" },
-    { id:12, name:"Westchester Golf Course",  location:"Boynton Beach, FL",     type:"chronogolf" },
     { id:13, name:"Boca Raton Golf & Racquet Club", location:"Boca Raton, FL", type:"direct"     },
     { id:14, name:"Boynton Beach Links",      location:"Boynton Beach, FL",     type:"direct"     },
   ];
 
   function sortCoursesChronogolfLast(list) {
-    return list.slice().sort((a, b) => {
-      const aChrono = a.type === 'chronogolf' ? 1 : 0;
-      const bChrono = b.type === 'chronogolf' ? 1 : 0;
-      if (aChrono !== bChrono) return aChrono - bChrono;
-      return (a.id || 0) - (b.id || 0);
-    });
+    return list.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
   }
   COURSES = sortCoursesChronogolfLast(COURSES);
   document.getElementById('courseCount').textContent = COURSES.length;
@@ -518,7 +510,7 @@
               <div class="course-name">${c.name}</div>
               <div class="course-loc">📍 ${c.location}</div>
             </div>
-            <span class="card-badge ${c.type === 'foreup' ? 'badge-live' : c.type === 'chronogolf' ? 'badge-chrono' : 'badge-link'}">${c.type === 'foreup' ? 'ForeUp' : c.type === 'chronogolf' ? 'Chronogolf' : 'Book direct'}</span>
+            <span class="card-badge ${c.type === 'foreup' ? 'badge-live' : 'badge-link'}">${c.type === 'foreup' ? 'ForeUp' : 'Book direct'}</span>
           </div>
           <div class="card-body" id="body-${c.id}">${bodyHtml}</div>
         </div>
@@ -531,7 +523,7 @@
       return `<p class="idle-msg">Select a date and click Check All Courses.</p>`;
     }
     if (state === 'loading') {
-      const slowNote = (course.type === 'chronogolf' || course.type === 'direct') ? ' <span style="color:var(--gold);font-size:0.72rem">(~20-45s)</span>' : '';
+      const slowNote = course.type === 'direct' ? ' <span style="color:var(--gold);font-size:0.72rem">(~20-45s)</span>' : '';
       return `<div class="loading-row"><div class="spinner"></div><span>Fetching tee times…${slowNote}</span></div>`;
     }
     if (state === 'done' && result) {
