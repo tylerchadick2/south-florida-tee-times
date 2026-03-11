@@ -228,7 +228,7 @@ def fetch_foreup_times(course, date_mmddyyyy, players):
         "api_key": "no_limits",
     }
     try:
-        resp = requests.get(url, params=params, headers=FOREUP_HEADERS, timeout=12)
+        resp = requests.get(url, params=params, headers=FOREUP_HEADERS, timeout=20)
         resp.raise_for_status()
         data = resp.json()
 
@@ -2636,22 +2636,21 @@ def get_all_teetimes():
         with lock:
             results[course["id"]] = result
 
-    # ForeUp: parallel (no Selenium)
+    # ForeUp first (no Chrome): finish before starting browser so ForeUp never competes for RAM/CPU on 512MB (Render)
     foreup_threads = [threading.Thread(target=course_worker, args=(c,)) for c in foreup_courses]
     for t in foreup_threads:
         t.start()
-
-    # Direct and Chronogolf: run Chrome
+    for t in foreup_threads:
+        t.join(timeout=25)
+    # Now run Chrome (direct + Chronogolf) so ForeUp results are already in
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
-        # 1) Run all non-Boynton direct courses.
         if direct_non_boynton:
             def direct_done(cid, res):
                 with lock:
                     results[cid] = res
             fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
-        # 2) Run Chronogolf courses (second to last).
         r = fetch_all_chronogolf(chrono_courses, date_str, players)
         if before_time:
             for cid, res in r.items():
@@ -2659,7 +2658,6 @@ def get_all_teetimes():
                     res["times"] = apply_time_filter(res.get("times", []), before_time)
         with lock:
             chrono_results.update(r)
-        # 3) Run Boynton Beach Links last so it never delays other results.
         if boynton_course:
             def boynton_done(cid, res):
                 with lock:
@@ -2667,11 +2665,6 @@ def get_all_teetimes():
             fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
     browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
-
-    # Wait for ForeUp
-    for t in foreup_threads:
-        t.join(timeout=15)
-    # With 2 parallel, 180s is enough; with 1 worker allow ~50s per course so all finish or timeout
     n_browser_courses = len(direct_courses) + len(chrono_courses)
     browser_join = max(180, 50 * n_browser_courses) if _max_browser_workers() == 1 else 180
     browser_thread.join(timeout=browser_join)
@@ -2737,7 +2730,15 @@ def get_all_teetimes_stream():
 
     for c in foreup_courses:
         threading.Thread(target=course_worker, args=(c,), daemon=True).start()
-    threading.Thread(target=browser_worker, daemon=True).start()
+    # On Render, delay Chrome so ForeUp can finish without memory contention
+    if _is_render():
+        def delayed_browser():
+            import time as _t
+            _t.sleep(5)
+            browser_worker()
+        threading.Thread(target=delayed_browser, daemon=True).start()
+    else:
+        threading.Thread(target=browser_worker, daemon=True).start()
 
     def generate():
         for _ in range(total):
