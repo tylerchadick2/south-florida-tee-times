@@ -1542,20 +1542,20 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        _time.sleep(2.0 if _is_render() else 4.0)
+        # Checkpoint: 8s sleep, 20s wait. On Render use 6s/18s so page loads before we parse
+        _time.sleep(6.0 if _is_render() else 4.0)
         t1 = _time.monotonic()
-        # Wait for tiles: use execute_script (fast) instead of find_elements in condition (slow on huge DOM)
         def _has_tiles_or_done(d):
             try:
                 return d.execute_script("return document.querySelectorAll(\"[data-testid='teetimes-tile-time']\").length > 0;")
             except Exception:
                 return False
-        wait_tiles = 6 if _is_render() else 10
+        wait_tiles = 18 if _is_render() else 10
         try:
             WebDriverWait(driver, wait_tiles).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(0.3 if _is_render() else 0.5)
+        _time.sleep(1.0 if _is_render() else 0.5)
         _log_timing("wait for tiles", t1, name)
         t2 = _time.monotonic()
         seen = set()
@@ -1826,9 +1826,9 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        _time.sleep(2.0 if _is_render() else 4.0)
+        # Checkpoint: 6s sleep, 20s wait, 2s after. On Render use 5s/18s so slots load
+        _time.sleep(5.0 if _is_render() else 4.0)
         t1 = _time.monotonic()
-        # Wait for slot content: #SlotBox or .teetime with time text (checkpoint used 20s + 2s sleep)
         def _has_slots_or_done(d):
             try:
                 slot_box = d.find_elements(By.CSS_SELECTOR, "#SlotBox .teetime, #SlotBox .itembox, .slot-outer-box .teetime")
@@ -1842,12 +1842,12 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
                 return len(time_pat.findall(body)) >= 1
             except Exception:
                 return False
-        wait_slots = 8 if _is_render() else 12
+        wait_slots = 18 if _is_render() else 12
         try:
             WebDriverWait(driver, wait_slots).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(0.3 if _is_render() else 0.5)
+        _time.sleep(1.0 if _is_render() else 0.5)
         _log_timing("wait for slots", t1, name)
         t2 = _time.monotonic()
         seen = set()
@@ -2185,11 +2185,13 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 key = t_str.upper().replace(" ", "")
                 if key in seen:
                     continue
-                # Only Championship course: require "championship" in card text and exclude "championship back"
+                # Championship only: accept if card has "championship" (not "back") or is short time-only header (Championship grid)
                 text_lower = text.lower()
                 if "back" in text_lower:
                     continue
-                if "championship" not in text_lower:
+                is_championship_card = "championship" in text_lower
+                is_header_only = len(text) < 25 and time_pat.search(text)
+                if not is_championship_card and not is_header_only:
                     continue
                 seen.add(key)
                 price_match = price_pat.search(text)
@@ -2230,7 +2232,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     if key in seen:
                         continue
                     text_lower = text.lower()
-                    if "back" in text_lower or "championship" not in text_lower:
+                    if "back" in text_lower:
+                        continue
+                    if "championship" not in text_lower and not (len(text) < 25 and time_pat.search(text)):
                         continue
                     seen.add(key)
                     price_match = price_pat.search(text)
@@ -2338,8 +2342,8 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 on_course_done(course_id, result)
 
     max_workers = _max_browser_workers()
-    # Per-course timeout: on Render (512MB) fail faster so one hung course doesn't block; locally allow more time.
-    base_timeout = 48 if _is_render() else 55
+    # Per-course timeout: on Render use checkpoint-like value so TeeItUp/Club Caddie (6+18s waits) can finish
+    base_timeout = 58 if _is_render() else 55
 
     if max_workers == 1:
         # Sequential: run one course at a time with timeout so every course gets a result
