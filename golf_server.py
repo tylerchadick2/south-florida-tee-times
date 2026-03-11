@@ -405,17 +405,16 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
         driver.get(url)
         _log_timing("page load", t1, name)
 
-        # Quick network checks — API can fire at 0.3s or a bit later; try 2 times (each _intercept_network is capped at 6s)
+        # Single quick network check (capped at 4s inside _intercept_network)
         t2 = time.monotonic()
-        for _ in (0, 1):
-            time.sleep(0.15)
-            times = _intercept_network(driver, date_iso)
-            if times is not None:
-                times = [t for t in times if int(t.get("available_spots") or 0) >= players]
-                _log_timing("network intercept (hit API)", t2, name)
-                if times:
-                    return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
-                return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
+        time.sleep(0.2)
+        times = _intercept_network(driver, date_iso)
+        if times is not None:
+            times = [t for t in times if int(t.get("available_spots") or 0) >= players]
+            _log_timing("network intercept (hit API)", t2, name)
+            if times:
+                return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
+            return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
         _log_timing("network intercept (no API)", t2, name)
 
         # Short wait for any slot (1.0s max, poll every 0.05s so we notice slots quickly)
@@ -426,10 +425,16 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
             return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
 
         view_more_texts = ("view more", "more times", "show more", "see more", "load more", "afficher plus", "plus de créneaux", "more slots")
+        view_more_deadline = time.monotonic() + 2.0
         try:
             for tag in ("button", "a", "[role='button']", "span", "div"):
+                if time.monotonic() > view_more_deadline:
+                    break
                 sel = tag if tag.startswith("[") else tag
-                for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                els = driver.find_elements(By.CSS_SELECTOR, sel)
+                for el in els[:20]:
+                    if time.monotonic() > view_more_deadline:
+                        break
                     t = (el.text or "").strip().lower()
                     if t and len(t) <= 60 and any(phrase in t for phrase in view_more_texts):
                         try:
@@ -447,7 +452,7 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
             pass
         try:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.08)
+            time.sleep(0.05)
             driver.execute_script("window.scrollTo(0, 0);")
             time.sleep(0.05)
         except Exception:
@@ -605,7 +610,7 @@ def _chronogolf_click_player_filter(driver, players):
                 By.XPATH,
                 "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'group size')]",
             )
-            for el in candidates:
+            for el in candidates[:15]:
                 pt = (el.get_attribute("innerHTML") or "") + " " + (el.text or "")
                 if "any" in pt.lower() or "1 player" in pt.lower() or "2 players" in pt.lower():
                     group_size_container = el
@@ -634,7 +639,7 @@ def _chronogolf_click_player_filter(driver, players):
             for opt in option_texts:
                 try:
                     els = group_size_container.find_elements(By.XPATH, ".//*[normalize-space(.)=%s]" % json.dumps(opt))
-                    for el in els:
+                    for el in els[:5]:
                         if not el.is_displayed():
                             continue
                         _debug_log("chronogolf:filter", "filter_click", {"scope": "group_size_label", "text": opt}, "H3")
@@ -651,7 +656,7 @@ def _chronogolf_click_player_filter(driver, players):
                 "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'group size')]"
                 "//input[@type='radio' and @value=%s]" % json.dumps(target),
             )
-            for inp in radios:
+            for inp in radios[:5]:
                 if inp.is_displayed():
                     _debug_log("chronogolf:filter", "filter_click", {"scope": "fallback_radio", "value": target}, "H3")
                     _scroll_click(inp)
@@ -666,7 +671,7 @@ def _chronogolf_click_player_filter(driver, players):
                     "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'group size')]"
                     "//*[normalize-space(.)=%s]" % json.dumps(opt),
                 )
-                for el in els:
+                for el in els[:5]:
                     if el.is_displayed():
                         _scroll_click(el)
                         _debug_log("chronogolf:filter", "filter_clicked", {"scope": "fallback_xpath", "text": opt}, "H4")
@@ -680,15 +685,18 @@ def _chronogolf_click_player_filter(driver, players):
 
 
 def _intercept_network(driver, date_iso):
-    """Scan Chrome network logs for Chronogolf tee time API responses. Capped to avoid 50s+ when logs are huge."""
+    """Scan Chrome network logs for Chronogolf tee time API responses. Tight cap so this phase stays under ~4s."""
     import time as _t
     try:
+        deadline = _t.monotonic() + 4.0
+        if _t.monotonic() > deadline:
+            return None
         logs = driver.get_log("performance")
-        # Process newest first; only last N entries and max M getResponseBody calls (each CDP call is slow)
-        max_entries = 50
-        max_body_calls = 3
+        if _t.monotonic() > deadline:
+            return None
+        max_entries = 25
+        max_body_calls = 2
         body_calls = 0
-        deadline = _t.monotonic() + 6.0
         entries = logs[-max_entries:] if len(logs) > max_entries else logs
         for entry in reversed(entries):
             if _t.monotonic() > deadline or body_calls >= max_body_calls:
@@ -1506,14 +1514,14 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         _log_timing("page load", t0, name)
         _time.sleep(1.0)
         t1 = _time.monotonic()
-        # Wait for Tee It Up tile times (data-testid). Avoid get_visible_text in condition — it's slow on big DOMs.
+        # Wait for tiles: use execute_script (fast) instead of find_elements in condition (slow on huge DOM)
         def _has_tiles_or_done(d):
             try:
-                return len(d.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']")) > 0
+                return d.execute_script("return document.querySelectorAll(\"[data-testid='teetimes-tile-time']\").length > 0;")
             except Exception:
                 return False
         try:
-            WebDriverWait(driver, 4).until(_has_tiles_or_done)
+            WebDriverWait(driver, 3).until(_has_tiles_or_done)
         except Exception:
             pass
         _time.sleep(0.3)
@@ -1562,7 +1570,8 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                 pass
         _log_timing("parse tiles", t2, name)
         if not times:
-            for time_el in driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']"):
+            all_tiles = driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']")
+            for time_el in all_tiles[:50]:
                 try:
                     t_text = (time_el.text or "").strip()
                     if not t_text:
@@ -2128,7 +2137,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 nodes_to_scan = tree.xpath("//*[contains(., 'AM') or contains(., 'PM')]")
             except Exception:
                 pass
-        for node in nodes_to_scan:
+        for node in (nodes_to_scan[:120] if len(nodes_to_scan) > 120 else nodes_to_scan):
             try:
                 text = (node.text_content() or "").strip()
                 if not text or len(text) > 250:
@@ -2169,7 +2178,8 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             except Exception:
                 continue
         if not times and tree is None:
-            for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
+            fallback_els = driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]")
+            for el in fallback_els[:120]:
                 try:
                     text = (el.text or "").strip()
                     if not text or len(text) > 250:
