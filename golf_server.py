@@ -1563,20 +1563,20 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        # Checkpoint: 8s sleep, 20s wait. On Render use 6s/18s so page loads before we parse
-        _time.sleep(6.0 if _is_render() else 4.0)
+        # Minimal initial delay so JS can start; then wait for tiles (returns as soon as they appear; max 28s on Render for slow FC)
+        _time.sleep(2.0)
         t1 = _time.monotonic()
         def _has_tiles_or_done(d):
             try:
                 return d.execute_script("return document.querySelectorAll(\"[data-testid='teetimes-tile-time']\").length > 0;")
             except Exception:
                 return False
-        wait_tiles = 18 if _is_render() else 10
+        wait_tiles = 28 if _is_render() else 12
         try:
             WebDriverWait(driver, wait_tiles).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(1.0 if _is_render() else 0.5)
+        _time.sleep(0.5)
         _log_timing("wait for tiles", t1, name)
         t2 = _time.monotonic()
         seen = set()
@@ -1847,8 +1847,8 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        # Checkpoint: 6s sleep, 20s wait, 2s after. On Render use 5s/18s so slots load
-        _time.sleep(5.0 if _is_render() else 4.0)
+        # Minimal initial delay; then wait for slots (returns as soon as they appear; max 28s on Render)
+        _time.sleep(2.0)
         t1 = _time.monotonic()
         def _has_slots_or_done(d):
             try:
@@ -1863,12 +1863,12 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
                 return len(time_pat.findall(body)) >= 1
             except Exception:
                 return False
-        wait_slots = 18 if _is_render() else 12
+        wait_slots = 28 if _is_render() else 12
         try:
             WebDriverWait(driver, wait_slots).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(1.0 if _is_render() else 0.5)
+        _time.sleep(0.5)
         _log_timing("wait for slots", t1, name)
         t2 = _time.monotonic()
         seen = set()
