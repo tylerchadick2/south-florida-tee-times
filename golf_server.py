@@ -2018,11 +2018,101 @@ def fetch_all_direct_clubcaddie(courses, date_iso, players, before_time=None, on
 
 
 # ─────────────────────────────────────────────
-# Eagle Club (Boynton Beach Links) — player.eagleclubsystems.online
-# UI: Filter Options sidebar (Players = buttons 1/2/3/4, Choose Course = dropdown).
-# Main area: horizontal date cards (e.g. "Sat 03/14"), then grid of tee time cards (green header = time, body = price, "4 Players").
-# (This is copied verbatim from golf_server_checkpoint_2026-03-06.py)
+# Eagle Club (Boynton Beach Links) — API (no Selenium)
 # ─────────────────────────────────────────────
+BOYNTON_BOOKING_URL = "https://player.eagleclubsystems.online/#/tee-slot?dbname=labb20241201"
+
+def _fetch_boynton_beach_api(date_iso, players):
+    """
+    Direct API call to Eagle Club - replaces Selenium scraper.
+    Only returns Championship course times; filters by requested player count.
+    """
+    date_eagle = date_iso.replace("-", "")
+    now = datetime.now()
+    current_time = now.strftime("%H%M")
+    players = max(1, min(4, int(players))) if players is not None else 4
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://player.eagleclubsystems.online",
+        "Referer": "https://player.eagleclubsystems.online/",
+    }
+    payload = {
+        "BCC": {
+            "StrServer": "GSERVER",
+            "StrURL": "https://api.eagleclubsystems.online",
+        },
+        "IncludeExisting": False,
+        "Master_CarriageID": 158,
+        "Master_TeePriceClassIDs": ",85,",
+        "OnlineBookingFormat": 0,
+        "OnlineBookingMaxDays": 8,
+        "StrDate": date_eagle,
+        "StrTime": current_time,
+        "TeePriceClassID": 85,
+    }
+
+    try:
+        response = requests.post(
+            "https://api.eagleclubsystems.online/api/online/OnlineAppointmentRetrieve",
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "API timeout", "booking_url": BOYNTON_BOOKING_URL, "times": []}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:100], "booking_url": BOYNTON_BOOKING_URL, "times": []}
+
+    times = []
+    for slot in data:
+        course_name = (slot.get("NineName") or "").strip()
+        if course_name.lower() != "championship":
+            continue
+        time_str = slot.get("Time", "")
+        if len(time_str) != 4:
+            continue
+        hour = int(time_str[:2])
+        minute = time_str[2:]
+        period = "AM" if hour < 12 else "PM"
+        display_hour = hour if hour <= 12 else hour - 12
+        if display_hour == 0:
+            display_hour = 12
+        time_display = f"{display_hour}:{minute} {period}"
+
+        players_booked = len(slot.get("LstPlayer", []))
+        total_slots = int(slot.get("Slots", 4))
+        available_spots = total_slots - players_booked
+        if available_spots < players:
+            continue
+
+        fee = slot.get("EighteenFee") or slot.get("NineFee")
+        green_fee = None
+        if fee is not None:
+            try:
+                green_fee = float(fee)
+            except (TypeError, ValueError):
+                pass
+
+        times.append({
+            "time": time_display,
+            "min_players": 1,
+            "max_players": total_slots,
+            "available_spots": available_spots,
+            "holes": 18,
+            "green_fee": green_fee,
+            "cart_fee": None,
+            "rate_type": "Championship",
+            "section": "eagleclub_api",
+        })
+
+    return {"status": "ok", "times": times, "booking_url": BOYNTON_BOOKING_URL}
+
+
+# Legacy Selenium path (kept for reference; not used when API is used)
 def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     """Eagle Club: load page, click date card for target date, click player count (1-4), set dropdown to Championship, parse tee time cards."""
     from selenium.webdriver.common.by import By
@@ -2262,9 +2352,20 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
 
 
 def _fetch_one_direct_course(course, date_iso, players, before_time=None):
-    """Fetch one direct course (GolfNow, TeeItUp, Club Caddie, or Eagle Club). Club Caddie tries HTTP API first."""
+    """Fetch one direct course (GolfNow, TeeItUp, Club Caddie, or Eagle Club). Club Caddie and Eagle Club try HTTP API first."""
     driver = None
     scraper = course.get("direct_scraper") or ""
+    # Eagle Club (Boynton Beach): API only, no browser
+    if scraper == "eagleclub":
+        result = _fetch_boynton_beach_api(date_iso, players)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
+        if before_time and result.get("status") == "ok":
+            result["times"] = apply_time_filter(result.get("times", []), before_time)
+        if result.get("status") == "ok" and result.get("times"):
+            for t in result["times"]:
+                if t.get("time"):
+                    t["time"] = _normalize_tee_time_display(t["time"])
+        return (course["id"], result)
     # Club Caddie: try HTTP API first (same URL as widget; no browser needed)
     if scraper == "clubcaddie":
         result = _fetch_direct_clubcaddie_via_api(course, date_iso, players)
@@ -2285,8 +2386,6 @@ def _fetch_one_direct_course(course, date_iso, players, before_time=None):
             result = _fetch_direct_teeitup_with_driver(driver, course, date_iso, players)
         elif scraper == "clubcaddie":
             result = _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players)
-        elif scraper == "eagleclub":
-            result = _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players)
         else:
             result = {"status": "error", "message": "No scraper configured", "booking_url": course.get("booking_url", ""), "times": []}
         result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
@@ -2321,7 +2420,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 on_course_done(course_id, result)
 
     max_workers = _max_browser_workers()
-    # Per-course timeout: enough for TeeItUp/Club Caddie; Boynton (Eagle Club) needs more for Filter + date + players + course + parse
+    # Per-course timeout: enough for TeeItUp/Club Caddie (Boynton uses API, no browser)
     base_timeout = 58 if _is_render() else 55
 
     if max_workers == 1:
@@ -2337,8 +2436,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
             t = threading.Thread(target=_run)
             t.start()
-            # Boynton Beach Links (id=14): extra time so it doesn't time out (Filter 20s + sleeps + parse)
-            course_timeout = base_timeout + (28 if _is_render() else 20) if course.get("id") == 14 else base_timeout
+            course_timeout = base_timeout
             t.join(timeout=course_timeout)
             if out[0] is not None:
                 course_id, result = out[0]
@@ -2350,9 +2448,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     max_workers = min(len(courses), max_workers)
-    # With 2+ workers (e.g. Render MAX_PARALLEL_BROWSERS=2) there is no per-course timeout; ensure enough wall time for Boynton (id=14) if present
-    has_boynton = any(c.get("id") == 14 for c in courses)
-    timeout_direct = max(120, 60 * len(courses), 95 if has_boynton else 0)
+    timeout_direct = max(120, 60 * len(courses))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_fetch_one_direct_course, c, date_iso, players, before_time): c for c in courses}
         try:
@@ -2385,7 +2481,7 @@ def fetch_direct_eagleclub(course, date_iso, players):
 
 
 def fetch_direct_times(course, date_iso, players, before_time=None):
-    """Dispatch to the correct direct scraper (Tee It Up, Club Caddie, Eagle Club, etc.)."""
+    """Dispatch to the correct direct scraper (Tee It Up, Club Caddie, Eagle Club API, etc.)."""
     scraper = course.get("direct_scraper") or ""
     if scraper == "golfnow":
         result = fetch_direct_golfnow(course, date_iso, players)
@@ -2394,7 +2490,8 @@ def fetch_direct_times(course, date_iso, players, before_time=None):
     elif scraper == "clubcaddie":
         result = fetch_direct_clubcaddie(course, date_iso, players)
     elif scraper == "eagleclub":
-        result = fetch_direct_eagleclub(course, date_iso, players)
+        result = _fetch_boynton_beach_api(date_iso, players)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
     else:
         result = {"status": "error", "message": "No scraper configured", "booking_url": course.get("booking_url", ""), "times": []}
     if before_time and result.get("status") == "ok":
