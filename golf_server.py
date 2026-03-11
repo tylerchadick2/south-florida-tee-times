@@ -2065,7 +2065,8 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
         if target_mm_dd:
             # Date tabs are <a role="tab">Sun<br>03/15</a>. Restrict to role='tab' so we don't click other MM/DD text.
-            for el in driver.find_elements(By.XPATH, f\"//a[@role='tab' and contains(., '{target_mm_dd}')]\"):
+            xpath = "//a[@role='tab' and contains(., '%s')]" % target_mm_dd
+            for el in driver.find_elements(By.XPATH, xpath):
                 try:
                     if not el.is_displayed():
                         continue
