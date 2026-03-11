@@ -2064,44 +2064,70 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         except Exception:
             pass
         if target_mm_dd:
-            for el in driver.find_elements(By.XPATH, "//*[contains(., '%s')]" % target_mm_dd):
+            # Date tabs are <a role="tab">Sun<br>03/15</a>. Restrict to role='tab' so we don't click other MM/DD text.
+            for el in driver.find_elements(By.XPATH, f\"//a[@role='tab' and contains(., '{target_mm_dd}')]\"):
                 try:
-                    t = (el.text or "").strip()
-                    if target_mm_dd not in t or "Time" in t or "Filter" in t or not el.is_displayed():
+                    if not el.is_displayed():
                         continue
-                    if len(t) > 20 and "/" in t.replace(target_mm_dd, "", 1):
+                    txt = (el.text or "").strip()
+                    if target_mm_dd not in txt:
                         continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.2)
+                    _time.sleep(0.25)
                     ActionChains(driver).move_to_element(el).click().perform()
-                    _time.sleep(0.5)
+                    _time.sleep(0.6)
                     break
                 except Exception:
                     continue
+
+        # Championship course: prefer the explicit dropdown <select id="tagNineFilter"> and pick visible text "Championship".
         chosen = None
         try:
-            for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
-                if not sel_el.is_displayed():
-                    continue
-                for opt in sel_el.find_elements(By.TAG_NAME, "option"):
-                    t = (opt.text or "").strip().lower()
-                    if "back" in t:
+            try:
+                sel_el = driver.find_element(By.CSS_SELECTOR, "select#tagNineFilter")
+                if sel_el.is_displayed():
+                    try:
+                        SelSelect(sel_el).select_by_visible_text("Championship")
+                        chosen = "Championship"
+                    except Exception:
+                        # Fallback: loop options on this select only.
+                        for opt in sel_el.find_elements(By.TAG_NAME, "option"):
+                            t = (opt.text or "").strip().lower()
+                            if "back" in t:
+                                continue
+                            if t == "championship":
+                                SelSelect(sel_el).select_by_visible_text(opt.text.strip())
+                                chosen = opt.text.strip()
+                                break
+            except Exception:
+                pass
+            # Last resort: any select with an option "Championship".
+            if not chosen:
+                for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
+                    if not sel_el.is_displayed():
                         continue
-                    if t == "championship" or (t and "championship" in t):
-                        chosen = opt.text.strip()
+                    for opt in sel_el.find_elements(By.TAG_NAME, "option"):
+                        t = (opt.text or "").strip().lower()
+                        if "back" in t:
+                            continue
+                        if t == "championship":
+                            SelSelect(sel_el).select_by_visible_text(opt.text.strip())
+                            chosen = opt.text.strip()
+                            break
+                    if chosen:
                         break
-                if chosen:
-                    SelSelect(sel_el).select_by_visible_text(chosen)
-                    break
         except Exception:
-            pass
+            chosen = None
         if not chosen:
+            # Fallback custom dropdown: click element whose text is exactly "Championship" (not "Championship Back").
             for el in driver.find_elements(By.XPATH, "//*[contains(translate(., 'CHAMPIONSHIP', 'championship'), 'championship')]"):
                 try:
-                    if not el.is_displayed() or "back" in (el.text or "").lower():
+                    if not el.is_displayed():
                         continue
-                    t = (el.text or "").strip().lower()
-                    if t != "championship" and not (t.startswith("championship") and len(t) < 35):
+                    txt = (el.text or "").strip().lower()
+                    if "back" in txt:
+                        continue
+                    if txt != "championship":
                         continue
                     el.click()
                     break
