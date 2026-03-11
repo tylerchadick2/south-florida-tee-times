@@ -2020,16 +2020,16 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(base)
         _log_timing("page load", t0, name)
-        # Wait for SPA (Filter Options); on Render use shorter wait to keep single browser moving
+        # Wait for SPA (Filter Options) — minimal wait so Boynton runs close to Boca speed
         t1 = _time.monotonic()
-        wait_filter = 10 if _is_render() else 15
+        wait_filter = 6 if _is_render() else 8
         try:
             WebDriverWait(driver, wait_filter).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
             )
         except Exception:
             pass
-        _time.sleep(1.5 if _is_render() else 2)
+        _time.sleep(0.4)
         _log_timing("wait for Filter + sleep", t1, name)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
@@ -2060,9 +2060,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         if len(t) > 20 and target_mm_dd in t and ("/" in t.replace(target_mm_dd, "", 1)):
                             continue
                         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        _time.sleep(0.2)
+                        _time.sleep(0.15)
                         ActionChains(driver).move_to_element(el).click().perform()
-                        _time.sleep(1.2)
+                        _time.sleep(0.4)
                         break
                     except Exception:
                         continue
@@ -2098,9 +2098,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         except Exception:
                             continue
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _time.sleep(0.15)
+                    _time.sleep(0.1)
                     el.click()
-                    _time.sleep(0.8)
+                    _time.sleep(0.35)
                     break
                 except Exception:
                     continue
@@ -2129,7 +2129,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                             chosen = opt.text.strip()
                     if chosen:
                         SelSelect(sel_el).select_by_visible_text(chosen)
-                        _time.sleep(0.8)
+                        _time.sleep(0.35)
                         break
                 except Exception:
                     continue
@@ -2147,9 +2147,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         tag = el.tag_name.lower()
                         if tag in ("button", "div", "span", "a", "li"):
                             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            _time.sleep(0.15)
+                            _time.sleep(0.1)
                             el.click()
-                            _time.sleep(0.6)
+                            _time.sleep(0.35)
                             break
                     except Exception:
                         continue
@@ -2157,7 +2157,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
         _log_timing("course dropdown", t3, name)
 
-        _time.sleep(1.5 if _is_render() else 2)
+        _time.sleep(0.4)
 
         # 4) Parse tee time cards — lxml first (faster), then Selenium fallback (checkpoint had no cap)
         t4 = _time.monotonic()
@@ -2185,13 +2185,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 key = t_str.upper().replace(" ", "")
                 if key in seen:
                     continue
-                # Championship only: accept if card has "championship" (not "back") or is short time-only header (Championship grid)
+                # Championship only: require "championship" in card text (no header-only — that pulled in times from other courses)
                 text_lower = text.lower()
-                if "back" in text_lower:
-                    continue
-                is_championship_card = "championship" in text_lower
-                is_header_only = len(text) < 25 and time_pat.search(text)
-                if not is_championship_card and not is_header_only:
+                if "back" in text_lower or "championship" not in text_lower:
                     continue
                 seen.add(key)
                 price_match = price_pat.search(text)
@@ -2232,9 +2228,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     if key in seen:
                         continue
                     text_lower = text.lower()
-                    if "back" in text_lower:
-                        continue
-                    if "championship" not in text_lower and not (len(text) < 25 and time_pat.search(text)):
+                    if "back" in text_lower or "championship" not in text_lower:
                         continue
                     seen.add(key)
                     price_match = price_pat.search(text)
