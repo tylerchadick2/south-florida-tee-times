@@ -361,6 +361,13 @@ CHRONOGOLF_SLOT_SELECTORS = [
     "[class*='teetime']", "[class*='tee_time']",
     "button[class*='time']", ".booking-slot",
 ]
+# XPath equivalents for lxml (faster than many Selenium find_elements)
+CHRONOGOLF_SLOT_XPATHS = [
+    "//*[@data-cy='teetime']", "//*[@data-cy='tee-time']",
+    "//*[contains(@class, 'teetime')]", "//*[contains(@class, 'tee-time-slot')]",
+    "//*[contains(@class, 'TeeTime')]", "//*[contains(@class, 'tee_time')]",
+    "//button[contains(@class, 'time')]", "//*[contains(@class, 'booking-slot')]",
+]
 
 
 def _chronogolf_wait_any_slot(driver, timeout=1.0, poll=0.05):
@@ -398,9 +405,9 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
         driver.get(url)
         _log_timing("page load", t1, name)
 
-        # Quick network checks — API can fire at 0.3s or a bit later (e.g. Westchester); try 3 times so slow clubs still hit API
+        # Quick network checks — API can fire at 0.3s or a bit later; try 2 times (each _intercept_network is capped at 6s)
         t2 = time.monotonic()
-        for _ in (0, 1, 2):
+        for _ in (0, 1):
             time.sleep(0.15)
             times = _intercept_network(driver, date_iso)
             if times is not None:
@@ -451,6 +458,21 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
         time.sleep(0.15)
         slot_selector, _ = _chronogolf_wait_any_slot(driver, timeout=0.5)
         t4 = time.monotonic()
+        # Try lxml first (one page_source + xpath vs many find_elements)
+        tree = _parse_html_with_lxml(driver)
+        if tree is not None:
+            try:
+                for xpath in CHRONOGOLF_SLOT_XPATHS:
+                    nodes = tree.xpath(xpath)
+                    if nodes:
+                        texts = [(n.text_content() or "").strip() for n in nodes]
+                        times = _parse_chronogolf_slot_texts(texts, players)
+                        times = [t for t in times if int(t.get("available_spots") or 0) >= players]
+                        if times:
+                            _log_timing("DOM parse (lxml)", t4, name)
+                            return (course["id"], {"status": "ok", "times": times, "booking_url": course["booking_url"]})
+            except Exception:
+                pass
         if slot_selector:
             try:
                 els = driver.find_elements(By.CSS_SELECTOR, slot_selector)
@@ -658,10 +680,19 @@ def _chronogolf_click_player_filter(driver, players):
 
 
 def _intercept_network(driver, date_iso):
-    """Scan Chrome network logs for Chronogolf tee time API responses."""
+    """Scan Chrome network logs for Chronogolf tee time API responses. Capped to avoid 50s+ when logs are huge."""
+    import time as _t
     try:
         logs = driver.get_log("performance")
-        for entry in logs:
+        # Process newest first; only last N entries and max M getResponseBody calls (each CDP call is slow)
+        max_entries = 50
+        max_body_calls = 3
+        body_calls = 0
+        deadline = _t.monotonic() + 6.0
+        entries = logs[-max_entries:] if len(logs) > max_entries else logs
+        for entry in reversed(entries):
+            if _t.monotonic() > deadline or body_calls >= max_body_calls:
+                break
             try:
                 msg = json.loads(entry["message"])
                 params = msg.get("message", {}).get("params", {})
@@ -670,6 +701,7 @@ def _intercept_network(driver, date_iso):
                 if any(k in url.lower() for k in ["tee_time", "teetime", "teetimes", "booking/slot", "availability", "slot", "chronogolf"]):
                     req_id = params.get("requestId")
                     if req_id:
+                        body_calls += 1
                         body = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": req_id})
                         data = json.loads(body.get("body", "[]"))
                         times = _parse_chronogolf_json(data)
@@ -740,17 +772,20 @@ def _parse_chronogolf_spots_from_text(text):
     return None
 
 
-def _parse_dom(elements, players):
+def _parse_chronogolf_slot_texts(text_list, players):
+    """Parse a list of slot text strings (from lxml or Selenium) into tee time dicts."""
     times = []
-    for el in elements:
+    for text in text_list:
         try:
-            text = (el.text or "").strip()
+            text = (text or "").strip()
+            if not text:
+                continue
             m = re.search(r'\b(\d{1,2}:\d{2})\s*(am|pm|AM|PM)?\b', text, re.I)
             if m:
                 t_str = m.group(1) + (" " + (m.group(2) or "").upper() if m.group(2) else "")
                 spots = _parse_chronogolf_spots_from_text(text)
                 if spots is None:
-                    spots = 4  # assume full foursome when we can't parse capacity from DOM
+                    spots = 4
                 times.append({
                     "time": t_str.strip(),
                     "available_spots": spots,
@@ -762,6 +797,12 @@ def _parse_dom(elements, players):
         except Exception:
             continue
     return times
+
+
+def _parse_dom(elements, players):
+    """Parse Selenium elements into tee time dicts (delegates to text parser)."""
+    texts = [(el.text or "").strip() for el in elements]
+    return _parse_chronogolf_slot_texts(texts, players)
 
 
 def _regex_times(html, players):
@@ -1465,19 +1506,14 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         _log_timing("page load", t0, name)
         _time.sleep(1.0)
         t1 = _time.monotonic()
-        # Wait for Tee It Up tile times (data-testid) or "no times" / "Number of teetimes"
+        # Wait for Tee It Up tile times (data-testid). Avoid get_visible_text in condition — it's slow on big DOMs.
         def _has_tiles_or_done(d):
             try:
-                if len(d.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']")) > 0:
-                    return True
+                return len(d.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']")) > 0
             except Exception:
-                pass
-            body = (_selenium_get_visible_text(d) or "").lower()
-            if "no tee times" in body or "number of teetimes available" in body:
-                return True
-            return False
+                return False
         try:
-            WebDriverWait(driver, 6).until(_has_tiles_or_done)
+            WebDriverWait(driver, 4).until(_has_tiles_or_done)
         except Exception:
             pass
         _time.sleep(0.3)
