@@ -2061,14 +2061,32 @@ def _fetch_boynton_beach_api(date_iso, players):
             timeout=10,
         )
         response.raise_for_status()
-        data = response.json()
+        raw = response.json()
     except requests.exceptions.Timeout:
         return {"status": "error", "message": "API timeout", "booking_url": BOYNTON_BOOKING_URL, "times": []}
     except Exception as e:
         return {"status": "error", "message": str(e)[:100], "booking_url": BOYNTON_BOOKING_URL, "times": []}
 
+    # API returns a list of slot objects, or a dict wrapping that list (e.g. {"Data": [...]})
+    if isinstance(raw, list):
+        data = raw
+    elif isinstance(raw, dict):
+        data = raw.get("Data") or raw.get("Appointments") or raw.get("data")
+        if not isinstance(data, list) or (data and not isinstance(data[0], dict)):
+            # Find the value that is a list of slot dicts (have "Time" / "NineName")
+            for v in raw.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict) and ("Time" in v[0] or "NineName" in v[0]):
+                    data = v
+                    break
+            else:
+                data = []
+    else:
+        data = []
+
     times = []
     for slot in data:
+        if not isinstance(slot, dict):
+            continue
         course_name = (slot.get("NineName") or "").strip()
         if course_name.lower() != "championship":
             continue
