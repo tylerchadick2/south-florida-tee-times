@@ -2157,22 +2157,17 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
         _log_timing("course dropdown", t3, name)
 
-        _time.sleep(0.4)
+        _time.sleep(0.6)
 
-        # 4) Parse tee time cards — lxml first (faster), then Selenium fallback (checkpoint had no cap)
+        # 4) Parse tee time cards — Selenium only, visible elements only (Championship grid after dropdown) (checkpoint style). After dropdown = Championship, visible cards are Championship only.
         t4 = _time.monotonic()
         seen = set()
         times = []
-        tree = _parse_html_with_lxml(driver)
-        nodes_to_scan = []
-        if tree is not None:
+        for el in driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]"):
             try:
-                nodes_to_scan = tree.xpath("//*[contains(., 'AM') or contains(., 'PM')]")
-            except Exception:
-                pass
-        for node in (nodes_to_scan[:200] if len(nodes_to_scan) > 200 else nodes_to_scan):
-            try:
-                text = (node.text_content() or "").strip()
+                if not el.is_displayed():
+                    continue
+                text = (el.text or "").strip()
                 if not text or len(text) > 250:
                     continue
                 m = time_pat.search(text)
@@ -2180,14 +2175,17 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     continue
                 if "Filter Options" in text or ("Reset" in text and "Time" in text) or ("7AM" in text and "6PM" in text):
                     continue
+                text_lower = text.lower()
+                if "back" in text_lower:
+                    continue
+                is_card = "championship" in text_lower or "player" in text_lower or "$" in text
+                is_header_only = len(text) < 25 and time_pat.search(text)
+                if not is_card and not is_header_only:
+                    continue
                 h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
                 t_str = f"{int(h)}:{min_} {period}"
                 key = t_str.upper().replace(" ", "")
                 if key in seen:
-                    continue
-                # Championship only: require "championship" in card text (no header-only — that pulled in times from other courses)
-                text_lower = text.lower()
-                if "back" in text_lower or "championship" not in text_lower:
                     continue
                 seen.add(key)
                 price_match = price_pat.search(text)
@@ -2210,47 +2208,6 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 })
             except Exception:
                 continue
-        if not times and tree is None:
-            fallback_els = driver.find_elements(By.XPATH, "//*[contains(., 'AM') or contains(., 'PM')]")
-            for el in fallback_els[:120]:
-                try:
-                    text = (el.text or "").strip()
-                    if not text or len(text) > 250:
-                        continue
-                    m = time_pat.search(text)
-                    if not m:
-                        continue
-                    if "Filter Options" in text or ("Reset" in text and "Time" in text) or ("7AM" in text and "6PM" in text):
-                        continue
-                    h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-                    t_str = f"{int(h)}:{min_} {period}"
-                    key = t_str.upper().replace(" ", "")
-                    if key in seen:
-                        continue
-                    text_lower = text.lower()
-                    if "back" in text_lower or "championship" not in text_lower:
-                        continue
-                    seen.add(key)
-                    price_match = price_pat.search(text)
-                    green_fee = None
-                    if price_match:
-                        try:
-                            green_fee = float(price_match.group(0).replace("$", "").replace(",", ""))
-                        except Exception:
-                            pass
-                    times.append({
-                        "time": t_str,
-                        "min_players": 1,
-                        "max_players": 4,
-                        "available_spots": 4,
-                        "holes": 18,
-                        "green_fee": green_fee,
-                        "cart_fee": None,
-                        "rate_type": "",
-                        "section": "eagleclub",
-                    })
-                except Exception:
-                    continue
 
         # Sort by time and dedupe by key
         def _time_key(t):
