@@ -332,7 +332,8 @@ def _get_driver():
     options.add_argument("--no-first-run")
     options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    options.page_load_strategy = "eager"
+    # "none" = get() returns as soon as navigation starts; we wait for content with WebDriverWait. Avoids long "page load" for slow sites (e.g. TeeItUp).
+    options.page_load_strategy = "none"
     if _is_render():
         # Free tier 512MB: smaller window, limit renderer and JS heap so Chrome doesn't OOM
         options.add_argument("--window-size=1024,768")
@@ -2320,7 +2321,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 on_course_done(course_id, result)
 
     max_workers = _max_browser_workers()
-    # Per-course timeout: on Render use checkpoint-like value so TeeItUp/Club Caddie (6+18s waits) can finish
+    # Per-course timeout: enough for TeeItUp/Club Caddie; Boynton (Eagle Club) needs more for Filter + date + players + course + parse
     base_timeout = 58 if _is_render() else 55
 
     if max_workers == 1:
@@ -2336,8 +2337,8 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
             t = threading.Thread(target=_run)
             t.start()
-            # Boynton Beach Links (id=14) gets extra time for multi-step UI; others use base.
-            course_timeout = base_timeout + (12 if _is_render() else 15) if course.get("id") == 14 else base_timeout
+            # Boynton Beach Links (id=14): extra time so it doesn't time out (Filter 20s + sleeps + parse)
+            course_timeout = base_timeout + (28 if _is_render() else 20) if course.get("id") == 14 else base_timeout
             t.join(timeout=course_timeout)
             if out[0] is not None:
                 course_id, result = out[0]
@@ -2349,7 +2350,9 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     max_workers = min(len(courses), max_workers)
-    timeout_direct = max(120, 60 * len(courses))
+    # With 2+ workers (e.g. Render MAX_PARALLEL_BROWSERS=2) there is no per-course timeout; ensure enough wall time for Boynton (id=14) if present
+    has_boynton = any(c.get("id") == 14 for c in courses)
+    timeout_direct = max(120, 60 * len(courses), 95 if has_boynton else 0)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_fetch_one_direct_course, c, date_iso, players, before_time): c for c in courses}
         try:
