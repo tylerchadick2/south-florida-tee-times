@@ -2018,10 +2018,12 @@ def fetch_all_direct_clubcaddie(courses, date_iso, players, before_time=None, on
 
 # ─────────────────────────────────────────────
 # Eagle Club (Boynton Beach Links) — same pattern as Boca: load, wait for content, parse
-# Nuances: must set date, players, and Championship course before waiting for grid.
+# Nuances: must set date and Championship course before waiting for grid.
+# Players filter is unreliable on this site; we ignore requested players and instead parse the
+# "X Players" shown under each time card on the Eagle Club page.
 # ─────────────────────────────────────────────
 def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
-    """Eagle Club: like Boca — load, wait for Filter, set date/players/Championship, wait for grid, parse."""
+    """Eagle Club: like Boca — load, wait for Filter, set date/Championship, wait for grid, parse."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait, Select as SelSelect
     from selenium.webdriver.support import expected_conditions as EC
@@ -2035,6 +2037,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     booking_url = base
     time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
     price_pat = re.compile(r"\$[\d,.]+")
+    players_pat = re.compile(r"\b(\d+)\s*players?\b", re.I)
     try:
         t0 = _time.monotonic()
         _request_log(f"Eagle Club (Boynton) start id={course.get('id')}")
@@ -2052,7 +2055,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         _time.sleep(1.0 if _is_render() else 0.8)
         _log_timing("wait for Filter", t1, name)
 
-        # 2) Set date, players, course — minimal sleeps (like Boca: we just need UI to accept clicks)
+        # 2) Set date + Championship course — minimal sleeps (like Boca: we just need UI to accept clicks)
         target_mm_dd = None
         try:
             parts = date_iso.split("-")
@@ -2075,20 +2078,6 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     break
                 except Exception:
                     continue
-        players_val = max(1, min(4, int(players) if players else 4))
-        num = str(players_val)
-        for el in driver.find_elements(By.XPATH, "//*[normalize-space(text())='%s']" % num):
-            try:
-                if not el.is_displayed():
-                    continue
-                parent_text = (el.find_element(By.XPATH, "./..").get_attribute("innerText") or "").lower()
-                if "player" not in parent_text and "filter" not in parent_text:
-                    continue
-                el.click()
-                _time.sleep(0.5)
-                break
-            except Exception:
-                continue
         chosen = None
         try:
             for sel_el in driver.find_elements(By.CSS_SELECTOR, "select"):
@@ -2158,6 +2147,13 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     if "championship" not in text.lower() and "player" not in text.lower() and "$" not in text:
                         continue
                     price_m = price_pat.search(text)
+                    players_m = players_pat.search(text)
+                    shown_players = None
+                    if players_m:
+                        try:
+                            shown_players = int(players_m.group(1))
+                        except Exception:
+                            shown_players = None
                     for m in time_pat.finditer(text):
                         h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
                         t_str = f"{int(h)}:{min_} {period}"
@@ -2174,8 +2170,8 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         times.append({
                             "time": t_str,
                             "min_players": 1,
-                            "max_players": 4,
-                            "available_spots": 4,
+                            "max_players": shown_players or 4,
+                            "available_spots": shown_players or 4,
                             "holes": 18,
                             "green_fee": green_fee,
                             "cart_fee": None,
@@ -2192,6 +2188,13 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     text = (el.text or "").strip()
                     if not text or len(text) > 300 or "back" in text.lower():
                         continue
+                    players_m = players_pat.search(text)
+                    shown_players = None
+                    if players_m:
+                        try:
+                            shown_players = int(players_m.group(1))
+                        except Exception:
+                            shown_players = None
                     for m in time_pat.finditer(text):
                         h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
                         t_str = f"{int(h)}:{min_} {period}"
@@ -2209,8 +2212,8 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         times.append({
                             "time": t_str,
                             "min_players": 1,
-                            "max_players": 4,
-                            "available_spots": 4,
+                            "max_players": shown_players or 4,
+                            "available_spots": shown_players or 4,
                             "holes": 18,
                             "green_fee": green_fee,
                             "cart_fee": None,
