@@ -7,6 +7,10 @@ South Florida Golf Tee Time Checker
 Run:  python golf_server.py
 Open: http://localhost:5000
 
+On Render (free tier): RENDER=true is set automatically. We use 1 browser, smaller
+Chrome footprint, and tighter timeouts/waits so the app stays responsive on 512MB.
+For other 512MB hosts set LOW_MEMORY=1. Override with MAX_PARALLEL_BROWSERS=2 if you have more RAM.
+
 Dependencies:
     pip install flask flask-cors requests selenium
     Also needs ChromeDriver matching your Chrome version:
@@ -61,18 +65,22 @@ def _log_timing(label, start_monotonic, course_name=None):
 
 app = Flask(__name__, static_folder=".")
 
-# Browser concurrency: 2 parallel by default (fast results without OOM). On 512MB (e.g. Render) set MAX_PARALLEL_BROWSERS=1.
+# Render free tier: 512MB, single instance. We optimize driver and waits when RENDER=true.
+def _is_render():
+    return os.environ.get("RENDER", "").strip().lower() == "true" or os.environ.get("LOW_MEMORY", "").strip() == "1"
+
+# Browser concurrency: 2 parallel by default locally; on Render (512MB) default 1 to avoid OOM.
 def _max_browser_workers():
     v = os.environ.get("MAX_PARALLEL_BROWSERS", "").strip().lower()
     if v in ("1", "true", "yes", "low"):
         return 1
     if v == "":
-        return 2  # default: 2 parallel for speed without overloading memory
+        return 1 if _is_render() else 2
     try:
         n = int(v)
         return max(1, min(6, n))
     except ValueError:
-        return 2
+        return 1 if _is_render() else 2
 
 CORS(app)
 
@@ -315,28 +323,31 @@ def _get_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--blink-settings=imagesEnabled=false")
-    options.add_argument("--window-size=1024,768")
     options.add_argument("--log-level=3")
-    # Reduce memory for 512MB limit (Render free tier): one Chrome can use 200–400MB
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-sync")
     options.add_argument("--disable-translate")
     options.add_argument("--no-first-run")
-    options.add_argument("--disable-features=site-per-process,TranslateUI")
-    options.add_argument("--js-flags=--max-old-space-size=96")
-    options.add_argument("--renderer-process-limit=1")
-    options.add_argument("--disable-plugins")
-    options.add_argument("--disable-default-apps")
-    options.add_argument("--disable-hang-monitor")
     options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     options.page_load_strategy = "eager"
+    if _is_render():
+        # Free tier 512MB: smaller window, limit renderer and JS heap so Chrome doesn't OOM
+        options.add_argument("--window-size=1024,768")
+        options.add_argument("--js-flags=--max-old-space-size=128")
+        options.add_argument("--renderer-process-limit=1")
+    else:
+        options.add_argument("--window-size=1280,900")
 
     def _wrap(driver):
         try:
-            driver.set_page_load_timeout(20)
-            driver.set_script_timeout(12)
+            if _is_render():
+                driver.set_page_load_timeout(28)
+                driver.set_script_timeout(18)
+            else:
+                driver.set_page_load_timeout(45)
+                driver.set_script_timeout(25)
         except Exception:
             pass
         return driver
@@ -405,10 +416,26 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
         driver.get(url)
         _log_timing("page load", t1, name)
 
-        # Single quick network check (capped at 4s inside _intercept_network)
+        # Network check: on Render run in thread with tight cap so get_log() can't block; locally 3 direct tries (checkpoint style)
         t2 = time.monotonic()
-        time.sleep(0.2)
-        times = _intercept_network(driver, date_iso)
+        times = None
+        if _is_render():
+            _net_result = [None]
+            def _run():
+                try:
+                    _net_result[0] = _intercept_network(driver, date_iso, deadline_sec=3, max_entries=25, max_body_calls=2)
+                except Exception:
+                    pass
+            _t = threading.Thread(target=_run, daemon=True)
+            _t.start()
+            _t.join(timeout=4.0)
+            times = _net_result[0]
+        else:
+            for _ in range(3):
+                times = _intercept_network(driver, date_iso)
+                if times is not None:
+                    break
+                time.sleep(0.24)
         if times is not None:
             times = [t for t in times if int(t.get("available_spots") or 0) >= players]
             _log_timing("network intercept (hit API)", t2, name)
@@ -417,22 +444,23 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
             return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
         _log_timing("network intercept (no API)", t2, name)
 
-        # Short wait for any slot (1.0s max, poll every 0.05s so we notice slots quickly)
+        # Wait for any slot; on Render keep it short so single browser moves on
         t3 = time.monotonic()
-        slot_selector, found = _chronogolf_wait_any_slot(driver, timeout=1.0)
+        slot_selector, found = _chronogolf_wait_any_slot(driver, timeout=1.0 if _is_render() else 1.5)
         _log_timing("wait_any_slot", t3, name)
         if not found or not slot_selector:
             return (course["id"], {"status": "ok", "times": [], "booking_url": course["booking_url"]})
 
         view_more_texts = ("view more", "more times", "show more", "see more", "load more", "afficher plus", "plus de créneaux", "more slots")
-        view_more_deadline = time.monotonic() + 2.0
+        view_more_deadline = time.monotonic() + (2.5 if _is_render() else 5.0)
+        view_more_els = 20 if _is_render() else 30
         try:
             for tag in ("button", "a", "[role='button']", "span", "div"):
                 if time.monotonic() > view_more_deadline:
                     break
                 sel = tag if tag.startswith("[") else tag
                 els = driver.find_elements(By.CSS_SELECTOR, sel)
-                for el in els[:20]:
+                for el in els[:view_more_els]:
                     if time.monotonic() > view_more_deadline:
                         break
                     t = (el.text or "").strip().lower()
@@ -512,6 +540,25 @@ def _fetch_one_chronogolf_course(course, date_iso, players):
                 pass
 
 
+def _fetch_one_chronogolf_course_with_timeout(course, date_iso, players, timeout_sec=55):
+    """Run _fetch_one_chronogolf_course in a thread so we can cap at timeout_sec and avoid blocking on renderer hang."""
+    out = [None]
+    def _run():
+        try:
+            out[0] = _fetch_one_chronogolf_course(course, date_iso, players)
+        except Exception as e:
+            msg = str(e)
+            if "receiving message from renderer" in msg.lower():
+                msg = "Page timed out; try again or book on the course site."
+            out[0] = (course["id"], {"status": "error", "message": msg[:100], "booking_url": course.get("booking_url", ""), "times": []})
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+    if out[0] is not None:
+        return out[0]
+    return (course["id"], {"status": "error", "message": "Timed out (%ss)" % timeout_sec, "booking_url": course.get("booking_url", ""), "times": []})
+
+
 def fetch_all_chronogolf(courses, date_iso, players, on_course_done=None):
     """
     Fetch all Chronogolf courses in parallel (one browser per course).
@@ -532,18 +579,21 @@ def fetch_all_chronogolf(courses, date_iso, players, on_course_done=None):
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         max_workers = min(len(courses), _max_browser_workers())
-        # With 2 parallel, 60s total is enough; with 1 worker allow more for sequential runs
-        timeout_chrono = (50 * len(courses)) if _max_browser_workers() == 1 else 60
-        timeout_chrono = max(timeout_chrono, 60)
+        per_course_timeout = 45 if _is_render() else 55
+        timeout_chrono = per_course_timeout * len(courses) + (35 if _is_render() else 45)
+        timeout_chrono = max(timeout_chrono, 90)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_fetch_one_chronogolf_course, c, date_iso, players): c for c in courses}
+            futures = {executor.submit(_fetch_one_chronogolf_course_with_timeout, c, date_iso, players, per_course_timeout): c for c in courses}
             for future in as_completed(futures, timeout=timeout_chrono):
                 try:
-                    course_id, result = future.result()
+                    course_id, result = future.result(timeout=5)
                     _store(course_id, result)
                 except Exception as e:
                     course = futures[future]
-                    _store(course["id"], {"status": "error", "message": str(e)[:100], "booking_url": course.get("booking_url", "")})
+                    msg = str(e)
+                    if "receiving message from renderer" in msg.lower() or "timeout" in msg.lower():
+                        msg = "Page timed out; try again or book on the course site."
+                    _store(course["id"], {"status": "error", "message": msg[:100], "booking_url": course.get("booking_url", ""), "times": []})
     except Exception as e:
         msg = str(e)
         if "chromedriver" in msg.lower() or "chrome not" in msg.lower():
@@ -684,22 +734,20 @@ def _chronogolf_click_player_filter(driver, players):
         _debug_log("chronogolf:filter", "exception", {"players": players, "error": str(e)[:120]}, "H5")
 
 
-def _intercept_network(driver, date_iso):
-    """Scan Chrome network logs for Chronogolf tee time API responses. Tight cap so this phase stays under ~4s."""
+def _intercept_network(driver, date_iso, deadline_sec=None, max_entries=None, max_body_calls=None):
+    """Scan Chrome network logs for Chronogolf tee time API responses. Optional caps for low-memory (Render) so get_log doesn't block."""
     import time as _t
     try:
-        deadline = _t.monotonic() + 4.0
-        if _t.monotonic() > deadline:
-            return None
+        deadline = _t.monotonic() + (deadline_sec if deadline_sec is not None else 10.0)
         logs = driver.get_log("performance")
         if _t.monotonic() > deadline:
             return None
-        max_entries = 25
-        max_body_calls = 2
+        cap_entries = max_entries if max_entries is not None else 50
+        cap_body = max_body_calls if max_body_calls is not None else 3
         body_calls = 0
-        entries = logs[-max_entries:] if len(logs) > max_entries else logs
+        entries = logs[-cap_entries:] if len(logs) > cap_entries else logs
         for entry in reversed(entries):
-            if _t.monotonic() > deadline or body_calls >= max_body_calls:
+            if _t.monotonic() > deadline or body_calls >= cap_body:
                 break
             try:
                 msg = json.loads(entry["message"])
@@ -1512,7 +1560,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        _time.sleep(1.0)
+        _time.sleep(2.0 if _is_render() else 4.0)
         t1 = _time.monotonic()
         # Wait for tiles: use execute_script (fast) instead of find_elements in condition (slow on huge DOM)
         def _has_tiles_or_done(d):
@@ -1520,11 +1568,12 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
                 return d.execute_script("return document.querySelectorAll(\"[data-testid='teetimes-tile-time']\").length > 0;")
             except Exception:
                 return False
+        wait_tiles = 6 if _is_render() else 10
         try:
-            WebDriverWait(driver, 3).until(_has_tiles_or_done)
+            WebDriverWait(driver, wait_tiles).until(_has_tiles_or_done)
         except Exception:
             pass
-        _time.sleep(0.3)
+        _time.sleep(0.3 if _is_render() else 0.5)
         _log_timing("wait for tiles", t1, name)
         t2 = _time.monotonic()
         seen = set()
@@ -1571,7 +1620,7 @@ def _fetch_direct_teeitup_with_driver(driver, course, date_iso, players):
         _log_timing("parse tiles", t2, name)
         if not times:
             all_tiles = driver.find_elements(By.CSS_SELECTOR, "[data-testid='teetimes-tile-time']")
-            for time_el in all_tiles[:50]:
+            for time_el in all_tiles[:80]:
                 try:
                     t_text = (time_el.text or "").strip()
                     if not t_text:
@@ -1795,9 +1844,9 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(url)
         _log_timing("page load", t0, name)
-        _time.sleep(1.0)
+        _time.sleep(2.0 if _is_render() else 4.0)
         t1 = _time.monotonic()
-        # Wait for slot content: #SlotBox or .teetime with time text
+        # Wait for slot content: #SlotBox or .teetime with time text (checkpoint used 20s + 2s sleep)
         def _has_slots_or_done(d):
             try:
                 slot_box = d.find_elements(By.CSS_SELECTOR, "#SlotBox .teetime, #SlotBox .itembox, .slot-outer-box .teetime")
@@ -1811,11 +1860,12 @@ def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
                 return len(time_pat.findall(body)) >= 1
             except Exception:
                 return False
+        wait_slots = 8 if _is_render() else 12
         try:
-            WebDriverWait(driver, 6).until(_has_slots_or_done)
+            WebDriverWait(driver, wait_slots).until(_has_slots_or_done)
         except Exception:
             pass
-        _time.sleep(0.3)
+        _time.sleep(0.3 if _is_render() else 0.5)
         _log_timing("wait for slots", t1, name)
         t2 = _time.monotonic()
         seen = set()
@@ -1988,15 +2038,16 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         t0 = _time.monotonic()
         driver.get(base)
         _log_timing("page load", t0, name)
-        # Wait for SPA (Filter Options); shorter wait so we don't burn timeout on slow loads
+        # Wait for SPA (Filter Options); on Render use shorter wait to keep single browser moving
         t1 = _time.monotonic()
+        wait_filter = 10 if _is_render() else 15
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, wait_filter).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(translate(., 'FILTER', 'filter'), 'filter')]"))
             )
         except Exception:
             pass
-        _time.sleep(1)
+        _time.sleep(1.5 if _is_render() else 2)
         _log_timing("wait for Filter + sleep", t1, name)
 
         # Parse target date for card match: cards show "Sat 03/14" or "Saturday, 03/14/2026" — we need MM/DD
@@ -2124,9 +2175,9 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
         _log_timing("course dropdown", t3, name)
 
-        _time.sleep(1.5)
+        _time.sleep(1.5 if _is_render() else 2)
 
-        # 4) Parse tee time cards — lxml first (faster), then Selenium fallback
+        # 4) Parse tee time cards — lxml first (faster), then Selenium fallback (checkpoint had no cap)
         t4 = _time.monotonic()
         seen = set()
         times = []
@@ -2137,7 +2188,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 nodes_to_scan = tree.xpath("//*[contains(., 'AM') or contains(., 'PM')]")
             except Exception:
                 pass
-        for node in (nodes_to_scan[:120] if len(nodes_to_scan) > 120 else nodes_to_scan):
+        for node in (nodes_to_scan[:200] if len(nodes_to_scan) > 200 else nodes_to_scan):
             try:
                 text = (node.text_content() or "").strip()
                 if not text or len(text) > 250:
@@ -2302,7 +2353,10 @@ def _fetch_one_direct_course(course, date_iso, players, before_time=None):
                     t["time"] = _normalize_tee_time_display(t["time"])
         return (course["id"], result)
     except Exception as e:
-        return (course["id"], {"status": "error", "message": str(e)[:100], "booking_url": course.get("booking_url", ""), "times": []})
+        msg = str(e)
+        if "receiving message from renderer" in msg.lower() or "timeout" in msg.lower():
+            msg = "Page timed out; try again or book on the course site."
+        return (course["id"], {"status": "error", "message": msg[:100], "booking_url": course.get("booking_url", ""), "times": []})
     finally:
         if driver:
             try:
@@ -2322,9 +2376,8 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 on_course_done(course_id, result)
 
     max_workers = _max_browser_workers()
-    # Per-course timeout so we never hang forever on one course (Render 512MB can cause Chrome to hang).
-    # Use a shorter cap for most sites, but give Boynton Beach a bit more room since its UI has more steps.
-    base_timeout = 40
+    # Per-course timeout: on Render (512MB) fail faster so one hung course doesn't block; locally allow more time.
+    base_timeout = 48 if _is_render() else 55
 
     if max_workers == 1:
         # Sequential: run one course at a time with timeout so every course gets a result
@@ -2339,8 +2392,8 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
 
             t = threading.Thread(target=_run)
             t.start()
-            # Boynton Beach Links (id=14) gets a bit more time for extra UI steps; others use base.
-            course_timeout = base_timeout + 15 if course.get("id") == 14 else base_timeout
+            # Boynton Beach Links (id=14) gets extra time for multi-step UI; others use base.
+            course_timeout = base_timeout + (12 if _is_render() else 15) if course.get("id") == 14 else base_timeout
             t.join(timeout=course_timeout)
             if out[0] is not None:
                 course_id, result = out[0]
@@ -2746,7 +2799,8 @@ if __name__ == "__main__":
     if n_direct:
         print(f"   Direct-book only  ({n_direct}) → link to course site")
     w = _max_browser_workers()
-    print(f"   Browser workers: {w} parallel" + (" (set MAX_PARALLEL_BROWSERS=1 on 512MB e.g. Render)" if w > 1 else ""))
+    render_mode = " [Render/512MB optimizations ON]" if _is_render() else ""
+    print(f"   Browser workers: {w} parallel{render_mode}" + ("" if _is_render() or w == 1 else " (set MAX_PARALLEL_BROWSERS=1 on 512MB)"))
     print()
     port = int(os.environ.get("PORT", 5000))
     host = os.environ.get("HOST", "0.0.0.0")
