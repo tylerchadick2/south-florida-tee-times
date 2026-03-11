@@ -209,7 +209,7 @@ def fetch_foreup_times(course, date_mmddyyyy, players):
         "api_key": "no_limits",
     }
     try:
-        resp = requests.get(url, params=params, headers=FOREUP_HEADERS, timeout=20)
+        resp = requests.get(url, params=params, headers=FOREUP_HEADERS, timeout=12)
         resp.raise_for_status()
         data = resp.json()
 
@@ -2134,7 +2134,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 except Exception:
                     continue
             else:
-                # Custom dropdown: click the option that says "Championship" exactly, not "Championship Back"
+                # Custom dropdown: click the option that is Championship (exact or "Championship Course"), not "Championship Back"
                 for el in driver.find_elements(By.XPATH, "//*[contains(translate(., 'CHAMPIONSHIP', 'championship'), 'championship')]"):
                     try:
                         if not el.is_displayed():
@@ -2142,7 +2142,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                         t = (el.text or "").strip().lower()
                         if "back" in t:
                             continue
-                        if t != "championship":
+                        if t != "championship" and not (t.startswith("championship") and len(t) < 35):
                             continue
                         tag = el.tag_name.lower()
                         if tag in ("button", "div", "span", "a", "li"):
@@ -2185,9 +2185,11 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 key = t_str.upper().replace(" ", "")
                 if key in seen:
                     continue
-                is_card = "championship" in text.lower() or "player" in text.lower() or "$" in text
-                is_header_only = len(text) < 25 and time_pat.search(text)
-                if not is_card and not is_header_only:
+                # Only Championship course: require "championship" in card text and exclude "championship back"
+                text_lower = text.lower()
+                if "back" in text_lower:
+                    continue
+                if "championship" not in text_lower:
                     continue
                 seen.add(key)
                 price_match = price_pat.search(text)
@@ -2227,9 +2229,8 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                     key = t_str.upper().replace(" ", "")
                     if key in seen:
                         continue
-                    is_card = "championship" in text.lower() or "player" in text.lower() or "$" in text
-                    is_header_only = len(text) < 25 and time_pat.search(text)
-                    if not is_card and not is_header_only:
+                    text_lower = text.lower()
+                    if "back" in text_lower or "championship" not in text_lower:
                         continue
                     seen.add(key)
                     price_match = price_pat.search(text)
@@ -2271,28 +2272,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
         if times:
             return {"status": "ok", "times": times[:120], "booking_url": booking_url}
 
-        # Fallback: any element with a time pattern in main content
-        body = _selenium_get_visible_text(driver) or ""
-        for m in time_pat.finditer(body):
-            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-            t_str = f"{int(h)}:{min_} {period}"
-            key = t_str.upper().replace(" ", "")
-            if key not in seen:
-                seen.add(key)
-                times.append({
-                    "time": t_str,
-                    "min_players": 1,
-                    "max_players": 4,
-                    "available_spots": 4,
-                    "holes": 18,
-                    "green_fee": None,
-                    "cart_fee": None,
-                    "rate_type": "",
-                    "section": "eagleclub",
-                })
-        times.sort(key=_time_key)
-        if times:
-            return {"status": "ok", "times": times[:120], "booking_url": booking_url}
+        # No body fallback for Eagle Club: we only want Championship course times; body text mixes all courses
         return {"status": "error", "message": "No tee times found", "booking_url": booking_url, "times": []}
     except Exception as e:
         return {"status": "error", "message": str(e)[:120], "booking_url": base, "times": []}
@@ -2615,13 +2595,12 @@ def get_all_teetimes():
         with lock:
             results[course["id"]] = result
 
-    # ForeUp first (no Chrome): finish before starting browser so ForeUp never competes for RAM/CPU on 512MB (Render)
+    # ForeUp + browser in parallel (checkpoint behavior) so total time = max(foreup, browser), not foreup+browser
+    # On Render only: delay browser start by 3s so ForeUp gets a head start without Chrome memory contention
     foreup_threads = [threading.Thread(target=course_worker, args=(c,)) for c in foreup_courses]
     for t in foreup_threads:
         t.start()
-    for t in foreup_threads:
-        t.join(timeout=25)
-    # Now run Chrome (direct + Chronogolf) so ForeUp results are already in
+
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
@@ -2631,9 +2610,6 @@ def get_all_teetimes():
                     results[cid] = res
             fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
         # Chronogolf disabled
-        # r = fetch_all_chronogolf(chrono_courses, date_str, players)
-        # if before_time: ...
-        # chrono_results.update(r)
         r = {}
         with lock:
             chrono_results.update(r)
@@ -2642,8 +2618,19 @@ def get_all_teetimes():
                 with lock:
                     results[cid] = res
             fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
-    browser_thread = threading.Thread(target=browser_worker)
+
+    if _is_render():
+        def delayed_browser():
+            import time as _t
+            _t.sleep(3)
+            browser_worker()
+        browser_thread = threading.Thread(target=delayed_browser)
+    else:
+        browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
+
+    for t in foreup_threads:
+        t.join(timeout=15)
     n_browser_courses = len(direct_courses) + len(chrono_courses)
     browser_join = max(180, 50 * n_browser_courses) if _max_browser_workers() == 1 else 180
     browser_thread.join(timeout=browser_join)
@@ -2706,11 +2693,11 @@ def get_all_teetimes_stream():
 
     for c in foreup_courses:
         threading.Thread(target=course_worker, args=(c,), daemon=True).start()
-    # On Render, delay Chrome so ForeUp can finish without memory contention
+    # On Render, delay Chrome 3s so ForeUp gets a head start without memory contention
     if _is_render():
         def delayed_browser():
             import time as _t
-            _t.sleep(5)
+            _t.sleep(3)
             browser_worker()
         threading.Thread(target=delayed_browser, daemon=True).start()
     else:
