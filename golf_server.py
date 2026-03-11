@@ -50,6 +50,16 @@ def _timing_enabled():
     return os.environ.get("TIMING", "").strip().lower() in ("1", "true", "yes")
 
 
+# Request/timeout logging: set LOG=1 (or TIMING=1) to print timeout and speed info to console (e.g. on Render)
+def _request_log(msg):
+    """Print to console when LOG=1 or TIMING=1 — use for timeouts and request flow to debug speed."""
+    if _timing_enabled() or os.environ.get("LOG", "").strip().lower() in ("1", "true", "yes"):
+        try:
+            print(f"  [LOG] {msg}")
+        except Exception:
+            pass
+
+
 def _log_timing(label, start_monotonic, course_name=None):
     """If TIMING=1, print elapsed seconds since start_monotonic. start_monotonic = time.monotonic() at phase start."""
     if not _timing_enabled():
@@ -196,6 +206,8 @@ FOREUP_HEADERS = {
 # FOREUP
 # ─────────────────────────────────────────────
 def fetch_foreup_times(course, date_mmddyyyy, players):
+    import time as _t
+    t0 = _t.monotonic()
     url = "https://app.foreupsoftware.com/index.php/api/booking/times"
     params = {
         "time": "all",
@@ -237,12 +249,20 @@ def fetch_foreup_times(course, date_mmddyyyy, players):
                 "cart_fee": slot.get("cart_fee"),
                 "rate_type": slot.get("rate_type", ""),
             })
+        elapsed = _t.monotonic() - t0
+        _request_log(f"ForeUp {course.get('name', '')} (id={course.get('id')}): ok in {elapsed:.1f}s, {len(times)} times")
         return {"status": "ok", "times": times}
     except requests.exceptions.Timeout:
+        elapsed = _t.monotonic() - t0
+        _request_log(f"ForeUp {course.get('name', '')} (id={course.get('id')}): REQUEST TIMED OUT after {elapsed:.1f}s")
         return {"status": "error", "message": "Request timed out"}
     except requests.exceptions.HTTPError as e:
+        elapsed = _t.monotonic() - t0
+        _request_log(f"ForeUp {course.get('name', '')} (id={course.get('id')}): HTTP {e.response.status_code} in {elapsed:.1f}s")
         return {"status": "error", "message": f"HTTP {e.response.status_code}"}
     except Exception as e:
+        elapsed = _t.monotonic() - t0
+        _request_log(f"ForeUp {course.get('name', '')} (id={course.get('id')}): error in {elapsed:.1f}s — {str(e)[:80]}")
         return {"status": "error", "message": str(e)}
 
 
@@ -2018,6 +2038,7 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     price_pat = re.compile(r"\$[\d,.]+")
     try:
         t0 = _time.monotonic()
+        _request_log(f"Eagle Club (Boynton) start id={course.get('id')}")
         driver.get(base)
         _log_timing("page load", t0, name)
         # Wait for SPA (Filter Options) — minimal wait so Boynton runs close to Boca speed
@@ -2224,12 +2245,16 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
 
         times.sort(key=_time_key)
         _log_timing("parse tee cards", t4, name)
+        total_eagle = _time.monotonic() - t0
         if times:
+            _request_log(f"Eagle Club (Boynton) done in {total_eagle:.1f}s — {len(times)} times")
             return {"status": "ok", "times": times[:120], "booking_url": booking_url}
 
-        # No body fallback for Eagle Club: we only want Championship course times; body text mixes all courses
+        _request_log(f"Eagle Club (Boynton) done in {total_eagle:.1f}s — no tee times found")
         return {"status": "error", "message": "No tee times found", "booking_url": booking_url, "times": []}
     except Exception as e:
+        total_eagle = _time.monotonic() - t0
+        _request_log(f"Eagle Club (Boynton) error in {total_eagle:.1f}s — {str(e)[:80]}")
         return {"status": "error", "message": str(e)[:120], "booking_url": base, "times": []}
 
 
@@ -2316,6 +2341,7 @@ def fetch_all_direct_parallel(courses, date_iso, players, before_time=None, on_c
                 course_id, result = out[0]
                 _done(course_id, result)
             else:
+                _request_log(f"TIMEOUT: Direct {course.get('name', '')} (id={course['id']}) after {course_timeout}s (per-course limit)")
                 _done(course["id"], {"status": "error", "message": "Timed out (%ss)" % course_timeout, "booking_url": course.get("booking_url", ""), "times": []})
         return
 
@@ -2529,6 +2555,9 @@ def get_all_teetimes():
     # #region agent log
     _debug_log("get_all_teetimes", "request", {"date": date_str, "players": players, "before_time": before_time, "repr": repr(before_time)}, "H1")
     # #endregion
+    import time as _req_time
+    request_start = _req_time.monotonic()
+    _request_log(f"all_teetimes start date={date_str} players={players}")
     print(f"  [all_teetimes] date={date_str} players={players} before_time={before_time!r}")
 
     if not date_str:
@@ -2586,14 +2615,25 @@ def get_all_teetimes():
 
     for t in foreup_threads:
         t.join(timeout=15)
+    foreup_elapsed = _req_time.monotonic() - request_start
+    foreup_done = [c["id"] for c in foreup_courses if c["id"] in results]
+    foreup_missing = [c["id"] for c in foreup_courses if c["id"] not in results]
+    if foreup_missing:
+        _request_log(f"ForeUp join: {len(foreup_done)}/{len(foreup_courses)} completed in {foreup_elapsed:.1f}s; TIMED OUT ids={foreup_missing}")
+    else:
+        _request_log(f"ForeUp join: all {len(foreup_courses)} completed in {foreup_elapsed:.1f}s")
+
     n_browser_courses = len(direct_courses) + len(chrono_courses)
     browser_join = max(180, 50 * n_browser_courses) if _max_browser_workers() == 1 else 180
     browser_thread.join(timeout=browser_join)
     results.update(chrono_results)
+    _request_log(f"browser_thread join done (timeout was {browser_join}s)")
 
     # Fill in any missing (timeouts; direct courses already set above)
     for course in COURSES:
         if course["id"] not in results:
+            ctype = "ForeUp" if course.get("type") == "foreup" else "Direct"
+            _request_log(f"TIMEOUT: {course.get('name', '')} (id={course['id']}) [{ctype}] — filling 'Timed out'")
             results[course["id"]] = {
                 "status": "error",
                 "message": "Timed out",
@@ -2601,6 +2641,8 @@ def get_all_teetimes():
                 "times": [],
             }
 
+    total_elapsed = _req_time.monotonic() - request_start
+    _request_log(f"all_teetimes done in {total_elapsed:.1f}s")
     return jsonify(results)
 
 
@@ -2726,5 +2768,6 @@ if __name__ == "__main__":
     print(f"   Debug log: {DEBUG_LOG_PATH}")
     print("   (Run with DEBUG=1 to echo debug lines to console)")
     print("   (Run with TIMING=1 to see per-phase seconds for Chronogolf/direct scrapes)")
+    print("   (Run with LOG=1 to see timeout and speed logs: ForeUp/Direct duration, which course timed out)")
     print("   Press Ctrl+C to stop\n")
     app.run(debug=False, host=host, port=port, threaded=True)
