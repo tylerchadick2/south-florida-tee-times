@@ -2178,9 +2178,24 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
             pass
         _log_timing("course dropdown", t3, name)
 
-        _time.sleep(0.6)
+        # Wait for Championship grid to render (SPA can take a moment after dropdown)
+        def _has_championship_card(d):
+            try:
+                for el in d.find_elements(By.XPATH, "//*[contains(., 'Championship') and (contains(., 'AM') or contains(., 'PM'))]"):
+                    if el.is_displayed():
+                        t = (el.text or "").strip()
+                        if "back" not in t.lower() and time_pat.search(t) and len(t) < 400:
+                            return True
+            except Exception:
+                pass
+            return False
+        try:
+            WebDriverWait(driver, 10).until(_has_championship_card)
+        except Exception:
+            pass
+        _time.sleep(1.0)
 
-        # 4) Parse tee time cards — Selenium only, visible elements only (Championship grid after dropdown) (checkpoint style). After dropdown = Championship, visible cards are Championship only.
+        # 4) Parse tee time cards — Selenium only, visible elements only (Championship grid after dropdown)
         t4 = _time.monotonic()
         seen = set()
         times = []
@@ -2229,6 +2244,45 @@ def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
                 })
             except Exception:
                 continue
+
+        # Fallback: if no times, look for elements that explicitly contain "Championship" + time (grid may be different structure)
+        if not times:
+            for el in driver.find_elements(By.XPATH, "//*[contains(., 'Championship') and (contains(., 'AM') or contains(., 'PM'))]"):
+                try:
+                    if not el.is_displayed():
+                        continue
+                    text = (el.text or "").strip()
+                    if not text or len(text) > 400:
+                        continue
+                    if "back" in text.lower():
+                        continue
+                    for m in time_pat.finditer(text):
+                        h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
+                        t_str = f"{int(h)}:{min_} {period}"
+                        key = t_str.upper().replace(" ", "")
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        price_match = price_pat.search(text)
+                        green_fee = None
+                        if price_match:
+                            try:
+                                green_fee = float(price_match.group(0).replace("$", "").replace(",", ""))
+                            except Exception:
+                                pass
+                        times.append({
+                            "time": t_str,
+                            "min_players": 1,
+                            "max_players": 4,
+                            "available_spots": 4,
+                            "holes": 18,
+                            "green_fee": green_fee,
+                            "cart_fee": None,
+                            "rate_type": "",
+                            "section": "eagleclub",
+                        })
+                except Exception:
+                    continue
 
         # Sort by time and dedupe by key
         def _time_key(t):
