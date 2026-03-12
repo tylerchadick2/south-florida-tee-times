@@ -439,8 +439,8 @@ def fetch_chronogolf_times(course, date_iso, players):
             _debug_log("fetch_chronogolf_times:slot_filter", "slot hole check", {"start_time": slot.get("start_time"), "slot_holes": slot_holes, "included": included, "slot_keys": list(slot.keys()) if slot_holes is None else None}, "H2")
             slot_log_count[0] += 1
             # #endregion
-        # Only 18-hole: include only when slot explicitly has 18 holes; exclude 9 and unknown
-        if slot_holes != 18:
+        # Only 18-hole: exclude when slot explicitly says 9; include when 18 or unknown (we request nb_holes=18)
+        if slot_holes is not None and slot_holes != 18:
             continue
         out_of_capacity = slot.get("out_of_capacity", False)
         available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
@@ -452,6 +452,9 @@ def fetch_chronogolf_times(course, date_iso, players):
         if green_fees:
             gf = green_fees[0]
             green_fee = gf.get("green_fee") or gf.get("price")
+        # We request 18 holes; slots with no price are not available for 18-hole — skip them
+        if green_fee is None:
+            continue
         times.append({
             "time": _chronogolf_time_to_str(start_time),
             "available_spots": available_spots,
@@ -461,6 +464,8 @@ def fetch_chronogolf_times(course, date_iso, players):
     elapsed = _t.monotonic() - t0
     # #region agent log
     _debug_log("fetch_chronogolf_times:counts", "raw vs filtered count", {"raw_slots": len(data), "times_returned": len(times)}, "H2")
+    if len(data) > 0 and len(times) == 0:
+        _request_log(f"Chronogolf API [The Park]: 0 times from {len(data)} raw — first slot keys: {list(data[0].keys())}")
     # #endregion
     _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): ok in {elapsed:.1f}s, {len(times)} times")
     return {"status": "ok", "times": times}
