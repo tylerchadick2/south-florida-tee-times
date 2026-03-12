@@ -1789,12 +1789,15 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             continue
         seen_key.add(time_key)
 
+        min_players = int(slot.get("minPlayers", 1))
         max_players = int(slot.get("maxPlayers", 4))
         booked = int(slot.get("bookedPlayers", 0))
         available = max(0, max_players - booked)
+        # Slot must allow this party size (e.g. 2 players: show 1–4, 1–3, 1–2, not 4-only)
+        if not (min_players <= players <= max_players):
+            continue
         if available < players:
             continue
-        # Don't filter by allowedPlayers: if there are enough spots (available >= players), show the time
         rates = slot.get("rates") or []
 
         green_fee = None
