@@ -418,14 +418,10 @@ def fetch_chronogolf_times(course, date_iso, players):
         return None
 
     times = []
-    logged_keys = [False]
     for slot in data:
-        # Only 18-hole times: include only when we have positive confirmation of 18
+        # Only 18-hole times: we request nb_holes=18; exclude only when slot explicitly says 9 holes
         slot_holes = _slot_hole_count(slot)
-        if slot_holes != 18:
-            if slot_holes is None and not logged_keys[0]:
-                _request_log(f"Chronogolf API [{course.get('name', '')}]: slot keys (first) {list(data[0].keys())} — no hole count found, filtering to 18-only")
-                logged_keys[0] = True
+        if slot_holes is not None and slot_holes != 18:
             continue
         out_of_capacity = slot.get("out_of_capacity", False)
         available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
