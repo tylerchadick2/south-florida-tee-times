@@ -1719,14 +1719,14 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
     }
     try:
+        # API requires YYYY-MM-DD; ensure we never send YYYY-MM only (causes 400)
+        if len(date_iso) == 7 and date_iso[4] == "-":
+            date_iso = date_iso + "-01"
         params = {"date": date_iso, "facilityIds": facility_id}
-        # Requested party size so API returns slots for 2, 3, 4 etc. (not only foursomes)
-        if players is not None:
-            params["players"] = players
-            params["groupSize"] = players
+        # Kenna phx-api may not support players/groupSize; omit to avoid 400
         url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
         if _kenna_log:
-            print(f"  [Kenna API] GET {url_with_params} players={players} Origin={origin} x-be-alias={be_alias}")
+            print(f"  [Kenna API] GET {url_with_params} (players={players} for filter only) Origin={origin} x-be-alias={be_alias}")
         resp = requests.get(
             KENNA_TEETIMES_URL,
             params=params,
