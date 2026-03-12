@@ -2053,6 +2053,10 @@ def _fetch_boynton_beach_api(date_iso, players):
         "TeePriceClassID": 85,
     }
 
+    _boynton_log = os.environ.get("BOYNTON_DEBUG", "").strip().lower() in ("1", "true", "yes")
+    if _boynton_log:
+        print(f"  [Boynton API] request date_iso={date_iso} date_eagle={date_eagle} str_time={str_time} players={players}")
+
     try:
         response = requests.post(
             "https://api.eagleclubsystems.online/api/online/OnlineAppointmentRetrieve",
@@ -2063,14 +2067,22 @@ def _fetch_boynton_beach_api(date_iso, players):
         response.raise_for_status()
         raw = response.json()
     except requests.exceptions.Timeout:
+        if _boynton_log:
+            print("  [Boynton API] TIMEOUT")
         return {"status": "error", "message": "API timeout", "booking_url": BOYNTON_BOOKING_URL, "times": []}
     except Exception as e:
+        if _boynton_log:
+            print(f"  [Boynton API] request error: {e}")
         return {"status": "error", "message": str(e)[:100], "booking_url": BOYNTON_BOOKING_URL, "times": []}
 
     # API returns a list of slot objects, or a dict wrapping that list (e.g. {"Data": [...]})
     if isinstance(raw, list):
         data = raw
+        if _boynton_log:
+            print(f"  [Boynton API] response type=list len={len(data)}")
     elif isinstance(raw, dict):
+        if _boynton_log:
+            print(f"  [Boynton API] response type=dict keys={list(raw.keys())}")
         data = raw.get("Data") or raw.get("Appointments") or raw.get("data")
         if not isinstance(data, list) or (data and not isinstance(data[0], dict)):
             # Find the value that is a list of slot dicts (have "Time" / "NineName")
@@ -2080,16 +2092,29 @@ def _fetch_boynton_beach_api(date_iso, players):
                     break
             else:
                 data = []
+                if _boynton_log:
+                    for k, v in raw.items():
+                        t = type(v).__name__
+                        if isinstance(v, list):
+                            t += f" len={len(v)}"
+                            if v and isinstance(v[0], dict):
+                                t += f" first_keys={list(v[0].keys())[:8]}"
+                        print(f"  [Boynton API] dict value {k!r}: {t}")
     else:
         data = []
+        if _boynton_log:
+            print(f"  [Boynton API] response type={type(raw).__name__} (not list/dict)")
 
     times = []
+    n_championship = 0
+    n_players_ok = 0
     for slot in data:
         if not isinstance(slot, dict):
             continue
         course_name = (slot.get("NineName") or "").strip()
         if course_name.lower() != "championship":
             continue
+        n_championship += 1
         time_str = str(slot.get("Time", "")).strip()
         if len(time_str) != 4 or not time_str.isdigit():
             continue
@@ -2106,6 +2131,7 @@ def _fetch_boynton_beach_api(date_iso, players):
         available_spots = total_slots - players_booked
         if available_spots < players:
             continue
+        n_players_ok += 1
 
         fee = slot.get("EighteenFee") or slot.get("NineFee")
         green_fee = None
@@ -2127,6 +2153,10 @@ def _fetch_boynton_beach_api(date_iso, players):
             "section": "eagleclub_api",
         })
 
+    if _boynton_log:
+        print(f"  [Boynton API] slots total={len(data)} championship={n_championship} players_ok={n_players_ok} times_returned={len(times)}")
+    if not times:
+        print(f"  [Boynton API] no times (raw_type={type(raw).__name__} data_len={len(data)} championship={n_championship} players_ok={n_players_ok}) — set BOYNTON_DEBUG=1 for full request/response")
     return {"status": "ok", "times": times, "booking_url": BOYNTON_BOOKING_URL}
 
 
