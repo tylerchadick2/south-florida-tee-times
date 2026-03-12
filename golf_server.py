@@ -351,7 +351,8 @@ def fetch_chronogolf_times(course, date_iso, players):
     course_id = course.get("chronogolf_course_id")
     affiliation_type_id = course.get("chronogolf_affiliation_type_id")
     if not all([club_id, course_id, affiliation_type_id]):
-        return {"status": "error", "message": "Missing Chronogolf course config", "times": []}
+        _request_log(f"Chronogolf API [{course.get('name', '')}]: missing config — club_id={club_id!r} course_id={course_id!r} affiliation_type_id={affiliation_type_id!r}")
+        return {"status": "error", "message": "Missing Chronogolf course config (need chronogolf_club_id, chronogolf_course_id, chronogolf_affiliation_type_id)", "times": []}
 
     url = f"https://www.chronogolf.com/marketplace/clubs/{club_id}/teetimes"
     # API expects affiliation_type_ids[] repeated for group size (e.g. 4 times for 4 players)
@@ -360,21 +361,25 @@ def fetch_chronogolf_times(course, date_iso, players):
         params_list.append(("affiliation_type_ids[]", str(affiliation_type_id)))
     params_list.append(("nb_holes", "18"))
 
+    _request_log(f"Chronogolf API [{course.get('name', '')}]: GET {url} params: date={date_iso} course_id={course_id} players={players}")
     try:
         resp = requests.get(url, params=params_list, headers=CHRONOGOLF_HEADERS, timeout=15)
+        elapsed = _t.monotonic() - t0
+        _request_log(f"Chronogolf API [{course.get('name', '')}]: response {resp.status_code} in {elapsed:.1f}s")
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, list):
+            _request_log(f"Chronogolf API [{course.get('name', '')}]: unexpected body type {type(data).__name__} (expected list)")
+            return {"status": "error", "message": "Unexpected response", "times": []}
+        _request_log(f"Chronogolf API [{course.get('name', '')}]: got {len(data)} raw slots")
     except requests.exceptions.Timeout:
         elapsed = _t.monotonic() - t0
-        _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): REQUEST TIMED OUT after {elapsed:.1f}s")
+        _request_log(f"Chronogolf API [{course.get('name', '')}]: REQUEST TIMED OUT after {elapsed:.1f}s")
         return {"status": "error", "message": "Request timed out", "times": []}
     except Exception as e:
         elapsed = _t.monotonic() - t0
-        _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): error in {elapsed:.1f}s — {str(e)[:80]}")
+        _request_log(f"Chronogolf API [{course.get('name', '')}]: error in {elapsed:.1f}s — {type(e).__name__}: {str(e)[:120]}")
         return {"status": "error", "message": str(e), "times": []}
-
-    if not isinstance(data, list):
-        return {"status": "error", "message": "Unexpected response", "times": []}
 
     times = []
     for slot in data:
@@ -1000,12 +1005,7 @@ def _normalize_time(raw):
     return raw
 
 
-def fetch_chronogolf_times(course, date_iso, players):
-    """Single course wrapper - used when called individually."""
-    results = fetch_all_chronogolf([course], date_iso, players)
-    return results.get(course["id"], {
-        "status": "error", "message": "Unknown error", "booking_url": course["booking_url"]
-    })
+# (fetch_chronogolf_times is defined above — HTTP API only; Selenium fetch_all_chronogolf not used for type=chronogolf)
 
 
 # ─────────────────────────────────────────────
