@@ -1519,8 +1519,120 @@ def fetch_all_direct_golfnow(courses, date_iso, players, before_time=None, on_co
 
 
 # ─────────────────────────────────────────────
-# Tee It Up (Florida Club) — the-florida-club.book.teeitup.golf
-# DOM: MUI cards; time in p[data-testid="teetimes-tile-time"]. No public API; would need to capture XHR from DevTools to try HTTP.
+# Tee It Up (Florida Club, Atlantic National) — Kenna API (replaces Selenium)
+# GET https://phx-api-be-east-1b.kenna.io/v2/tee-times?date=YYYY-MM-DD&facilityIds={id}
+# ─────────────────────────────────────────────
+KENNA_TEETIMES_URL = "https://phx-api-be-east-1b.kenna.io/v2/tee-times"
+
+def _fetch_teeitup_kenna_api(course, date_iso, players):
+    """Tee It Up (Florida Club 4529, Atlantic National 3495, etc.): Kenna API — no browser. Returns { status, times, booking_url }."""
+    facility_id = course.get("teeitup_course_id")
+    if not facility_id:
+        return {"status": "error", "message": "No teeitup_course_id", "booking_url": course.get("booking_url", ""), "times": []}
+    players = max(1, min(4, int(players))) if players is not None else 4
+    booking_url = course.get("booking_url", "") or ""
+    try:
+        resp = requests.get(
+            KENNA_TEETIMES_URL,
+            params={"date": date_iso, "facilityIds": facility_id},
+            headers={"Accept": "application/json", "Origin": "https://the-florida-club.book.teeitup.golf", "Referer": "https://the-florida-club.book.teeitup.golf/"},
+            timeout=12,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "API timeout", "booking_url": booking_url, "times": []}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:100], "booking_url": booking_url, "times": []}
+
+    raw_list = data.get("teetimes") if isinstance(data, dict) else []
+    if not isinstance(raw_list, list):
+        return {"status": "ok", "times": [], "booking_url": booking_url}
+
+    # Parse ISO teetime (UTC) to Eastern for display
+    try:
+        from zoneinfo import ZoneInfo
+        eastern = ZoneInfo("America/New_York")
+    except Exception:
+        eastern = None
+
+    times = []
+    seen_key = set()
+    for slot in raw_list:
+        if not isinstance(slot, dict):
+            continue
+        teetime_iso = slot.get("teetime") or ""
+        if not teetime_iso:
+            continue
+        try:
+            dt = datetime.fromisoformat(teetime_iso.replace("Z", "+00:00"))
+            if eastern:
+                dt = dt.astimezone(eastern)
+            hour, minute = dt.hour, dt.minute
+            period = "AM" if hour < 12 else "PM"
+            h12 = hour if hour <= 12 else hour - 12
+            if h12 == 0:
+                h12 = 12
+            time_display = f"{h12}:{minute:02d} {period}"
+            time_key = f"{hour:02d}:{minute:02d}"
+        except Exception:
+            continue
+        if time_key in seen_key:
+            continue
+        seen_key.add(time_key)
+
+        max_players = int(slot.get("maxPlayers", 4))
+        booked = int(slot.get("bookedPlayers", 0))
+        available = max(0, max_players - booked)
+        if available < players:
+            continue
+        rates = slot.get("rates") or []
+        allowed = set()
+        for r in rates:
+            for p in r.get("allowedPlayers") or []:
+                allowed.add(int(p))
+        if allowed and players not in allowed:
+            continue
+
+        green_fee = None
+        if rates:
+            cents = rates[0].get("greenFeeCart")
+            if cents is not None:
+                try:
+                    green_fee = int(cents) / 100.0
+                except (TypeError, ValueError):
+                    pass
+        rate_name = (rates[0].get("name") or "").strip() if rates else ""
+
+        times.append({
+            "time": time_display,
+            "min_players": int(slot.get("minPlayers", 1)),
+            "max_players": max_players,
+            "available_spots": available,
+            "holes": 18,
+            "green_fee": green_fee,
+            "cart_fee": None,
+            "rate_type": rate_name or "TeeItUp",
+            "section": "kenna_api",
+        })
+
+    def _sort_key(t):
+        s = t.get("time") or ""
+        m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", s, re.I)
+        if m:
+            h, min_val = int(m.group(1)), int(m.group(2))
+            if (m.group(3) or "").upper() == "PM" and h != 12:
+                h += 12
+            elif (m.group(3) or "").upper() == "AM" and h == 12:
+                h = 0
+            return (h, min_val)
+        return (0, 0)
+    times.sort(key=_sort_key)
+    return {"status": "ok", "times": times, "booking_url": booking_url}
+
+
+# ─────────────────────────────────────────────
+# Tee It Up — Selenium (legacy; Kenna API used for Florida Club & Atlantic National)
 # ─────────────────────────────────────────────
 def _parse_teeitup_player_range(text):
     """Parse Tee It Up 'available players' text: '1', '1 or 2', '1 - 4' -> (min, max)."""
@@ -2455,6 +2567,17 @@ def _fetch_one_direct_course(course, date_iso, players, before_time=None):
                     if t.get("time"):
                         t["time"] = _normalize_tee_time_display(t["time"])
             return (course["id"], result)
+    # Tee It Up (Florida Club, Atlantic National): Kenna API (no browser)
+    if scraper == "teeitup":
+        result = _fetch_teeitup_kenna_api(course, date_iso, players)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
+        if before_time and result.get("status") == "ok":
+            result["times"] = apply_time_filter(result.get("times", []), before_time)
+        if result.get("status") == "ok" and result.get("times"):
+            for t in result["times"]:
+                if t.get("time"):
+                    t["time"] = _normalize_tee_time_display(t["time"])
+        return (course["id"], result)
     try:
         driver = _get_driver()
         if scraper == "golfnow":
@@ -2563,7 +2686,8 @@ def fetch_direct_times(course, date_iso, players, before_time=None):
     if scraper == "golfnow":
         result = fetch_direct_golfnow(course, date_iso, players)
     elif scraper == "teeitup":
-        result = fetch_direct_teeitup(course, date_iso, players)
+        result = _fetch_teeitup_kenna_api(course, date_iso, players)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
     elif scraper == "clubcaddie":
         result = fetch_direct_clubcaddie(course, date_iso, players)
     elif scraper == "eagleclub":
@@ -2578,7 +2702,7 @@ def fetch_direct_times(course, date_iso, players, before_time=None):
         for t in result["times"]:
             if t.get("time"):
                 t["time"] = _normalize_tee_time_display(t["time"])
-    result["booking_url"] = course.get("booking_url", "")
+    result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
     return result
 
 
