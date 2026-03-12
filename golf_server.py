@@ -2042,6 +2042,7 @@ def _fetch_boynton_beach_api(date_iso, players):
         "BCC": {
             "StrServer": "GSERVER",
             "StrURL": "https://api.eagleclubsystems.online",
+            "StrDatabase": "labb20241201",
         },
         "IncludeExisting": False,
         "Master_CarriageID": 158,
@@ -2075,7 +2076,7 @@ def _fetch_boynton_beach_api(date_iso, players):
             print(f"  [Boynton API] request error: {e}")
         return {"status": "error", "message": str(e)[:100], "booking_url": BOYNTON_BOOKING_URL, "times": []}
 
-    # API returns a list of slot objects, or a dict wrapping that list (e.g. {"Data": [...]})
+    # API returns a list of slot objects, or a dict with LstAppointment/LstAppointmentAll/BG/etc.
     if isinstance(raw, list):
         data = raw
         if _boynton_log:
@@ -2083,15 +2084,28 @@ def _fetch_boynton_beach_api(date_iso, players):
     elif isinstance(raw, dict):
         if _boynton_log:
             print(f"  [Boynton API] response type=dict keys={list(raw.keys())}")
-        data = raw.get("Data") or raw.get("Appointments") or raw.get("data")
+        # Prefer known slot list keys (often empty; then try BG)
+        data = raw.get("LstAppointmentAll") or raw.get("LstAppointment") or raw.get("Data") or raw.get("Appointments") or raw.get("data")
         if not isinstance(data, list) or (data and not isinstance(data[0], dict)):
-            # Find the value that is a list of slot dicts (have "Time" / "NineName")
+            data = []
+        # If still empty, try BG (nested structure)
+        if not data and isinstance(raw.get("BG"), dict):
+            bg = raw["BG"]
+            if _boynton_log:
+                print(f"  [Boynton API] BG keys={list(bg.keys())}")
+            for v in bg.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict) and ("Time" in v[0] or "NineName" in v[0]):
+                    data = v
+                    if _boynton_log:
+                        print(f"  [Boynton API] using BG list len={len(data)}")
+                    break
+        if not data:
+            # Find any value that is a list of slot dicts
             for v in raw.values():
                 if isinstance(v, list) and v and isinstance(v[0], dict) and ("Time" in v[0] or "NineName" in v[0]):
                     data = v
                     break
             else:
-                data = []
                 if _boynton_log:
                     for k, v in raw.items():
                         t = type(v).__name__
@@ -2157,6 +2171,8 @@ def _fetch_boynton_beach_api(date_iso, players):
         print(f"  [Boynton API] slots total={len(data)} championship={n_championship} players_ok={n_players_ok} times_returned={len(times)}")
     if not times:
         print(f"  [Boynton API] no times (raw_type={type(raw).__name__} data_len={len(data)} championship={n_championship} players_ok={n_players_ok}) — set BOYNTON_DEBUG=1 for full request/response")
+        if isinstance(raw, dict) and len(data) == 0 and raw.get("LstAppointmentAll") is not None and len(raw.get("LstAppointmentAll", [])) == 0:
+            print(f"  [Boynton API] LstAppointmentAll is empty — API accepted request but returned no slots. Check browser Network tab on player.eagleclubsystems.online for the real payload (Master_CarriageID, etc.).")
     return {"status": "ok", "times": times, "booking_url": BOYNTON_BOOKING_URL}
 
 
