@@ -1566,12 +1566,13 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         "x-be-alias": be_alias,
     }
     try:
-        url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
+        params = {"date": date_iso, "facilityIds": facility_id, "players": players}
+        url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}&players={players}"
         if _kenna_log:
             print(f"  [Kenna API] GET {url_with_params} Origin={origin} x-be-alias={be_alias}")
         resp = requests.get(
             KENNA_TEETIMES_URL,
-            params={"date": date_iso, "facilityIds": facility_id},
+            params=params,
             headers=headers,
             timeout=12,
         )
@@ -1591,6 +1592,15 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         return {"status": "ok", "times": [], "booking_url": booking_url}
     if _kenna_log:
         print(f"  [Kenna API] teetimes count={len(raw_list)} facility_id={facility_id}")
+    if _kenna_log and len(raw_list) == 0 and isinstance(data, dict):
+        # API returned 200 but empty teetimes - log response shape to debug
+        print(f"  [Kenna API] response keys={list(data.keys())}")
+        for k in list(data.keys())[:10]:
+            v = data[k]
+            if isinstance(v, list):
+                print(f"  [Kenna API]   {k!r}: list len={len(v)}")
+            else:
+                print(f"  [Kenna API]   {k!r}: {type(v).__name__}")
 
     # Parse ISO teetime (UTC) to Eastern for display
     try:
