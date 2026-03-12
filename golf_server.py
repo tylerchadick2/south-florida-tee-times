@@ -1545,14 +1545,34 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             return {"status": "error", "message": "Date must be YYYY-MM-DD", "booking_url": course.get("booking_url", ""), "times": []}
     players = max(1, min(4, int(players))) if players is not None else 4
     booking_url = course.get("booking_url", "") or ""
+    # Kenna API expects Origin/Referer/x-be-alias to match the facility (Florida Club vs Atlantic National use different hosts)
+    base_url = (course.get("scrape_url") or booking_url or "").strip()
+    if base_url and "?" in base_url:
+        base_url = base_url.split("?")[0]
+    if base_url and base_url.endswith("/"):
+        base_url = base_url.rstrip("/")
+    origin = base_url or "https://the-florida-club.book.teeitup.golf"
+    referer = origin + "/"
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(origin)
+        be_alias = parsed.netloc.split(".")[0] if parsed.netloc else "the-florida-club"
+    except Exception:
+        be_alias = "the-florida-club"
+    headers = {
+        "Accept": "application/json",
+        "Origin": origin,
+        "Referer": referer,
+        "x-be-alias": be_alias,
+    }
     try:
         url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
         if _kenna_log:
-            print(f"  [Kenna API] GET {url_with_params}")
+            print(f"  [Kenna API] GET {url_with_params} Origin={origin} x-be-alias={be_alias}")
         resp = requests.get(
             KENNA_TEETIMES_URL,
             params={"date": date_iso, "facilityIds": facility_id},
-            headers={"Accept": "application/json", "Origin": "https://the-florida-club.book.teeitup.golf", "Referer": "https://the-florida-club.book.teeitup.golf/"},
+            headers=headers,
             timeout=12,
         )
         if _kenna_log:
