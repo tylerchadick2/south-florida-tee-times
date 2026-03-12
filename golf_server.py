@@ -1526,26 +1526,44 @@ KENNA_TEETIMES_URL = "https://phx-api-be-east-1b.kenna.io/v2/tee-times"
 
 def _fetch_teeitup_kenna_api(course, date_iso, players):
     """Tee It Up (Florida Club 4529, Atlantic National 3495, etc.): Kenna API — no browser. Returns { status, times, booking_url }."""
+    _kenna_log = os.environ.get("LOG", "").strip().lower() in ("1", "true", "yes") or os.environ.get("KENNA_DEBUG", "").strip().lower() in ("1", "true", "yes")
     facility_id = course.get("teeitup_course_id")
     if not facility_id:
         return {"status": "error", "message": "No teeitup_course_id", "booking_url": course.get("booking_url", ""), "times": []}
     date_iso = (date_iso or "").strip()
+    if _kenna_log:
+        print(f"  [Kenna API] date_iso={repr(date_iso)} len={len(date_iso)} facility_id={facility_id}")
     if len(date_iso) != 10 or date_iso[4] != "-" or date_iso[7] != "-":
-        return {"status": "error", "message": "Date must be YYYY-MM-DD", "booking_url": course.get("booking_url", ""), "times": []}
+        # Fallback: if frontend sends YYYY-MM only, use first of month so API doesn't 400
+        if len(date_iso) == 7 and date_iso[4] == "-" and date_iso[:4].isdigit() and date_iso[5:7].isdigit():
+            date_iso = date_iso + "-01"
+            if _kenna_log:
+                print(f"  [Kenna API] date was YYYY-MM, using {date_iso}")
+        else:
+            if _kenna_log:
+                print(f"  [Kenna API] REJECTED: date not YYYY-MM-DD (will not call API)")
+            return {"status": "error", "message": "Date must be YYYY-MM-DD", "booking_url": course.get("booking_url", ""), "times": []}
     players = max(1, min(4, int(players))) if players is not None else 4
     booking_url = course.get("booking_url", "") or ""
     try:
+        url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
+        if _kenna_log:
+            print(f"  [Kenna API] GET {url_with_params}")
         resp = requests.get(
             KENNA_TEETIMES_URL,
             params={"date": date_iso, "facilityIds": facility_id},
             headers={"Accept": "application/json", "Origin": "https://the-florida-club.book.teeitup.golf", "Referer": "https://the-florida-club.book.teeitup.golf/"},
             timeout=12,
         )
+        if _kenna_log:
+            print(f"  [Kenna API] response status={resp.status_code} url={resp.url}")
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.Timeout:
         return {"status": "error", "message": "API timeout", "booking_url": booking_url, "times": []}
     except Exception as e:
+        if _kenna_log:
+            print(f"  [Kenna API] error: {e}")
         return {"status": "error", "message": str(e)[:100], "booking_url": booking_url, "times": []}
 
     raw_list = data.get("teetimes") if isinstance(data, dict) else []
