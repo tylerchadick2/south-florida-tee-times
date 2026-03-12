@@ -1529,6 +1529,9 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
     facility_id = course.get("teeitup_course_id")
     if not facility_id:
         return {"status": "error", "message": "No teeitup_course_id", "booking_url": course.get("booking_url", ""), "times": []}
+    date_iso = (date_iso or "").strip()
+    if len(date_iso) != 10 or date_iso[4] != "-" or date_iso[7] != "-":
+        return {"status": "error", "message": "Date must be YYYY-MM-DD", "booking_url": course.get("booking_url", ""), "times": []}
     players = max(1, min(4, int(players))) if players is not None else 4
     booking_url = course.get("booking_url", "") or ""
     try:
