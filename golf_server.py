@@ -383,6 +383,10 @@ def fetch_chronogolf_times(course, date_iso, players):
 
     times = []
     for slot in data:
+        # Only 18-hole times (we request nb_holes=18; filter in case API ever returns mixed)
+        slot_holes = slot.get("nb_holes") or slot.get("holes")
+        if slot_holes is not None and int(slot_holes) != 18:
+            continue
         out_of_capacity = slot.get("out_of_capacity", False)
         available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
         if available_spots < players:
