@@ -2120,10 +2120,15 @@ def _fetch_boynton_beach_api(date_iso, players):
             print(f"  [Boynton API] response type={type(raw).__name__} (not list/dict)")
 
     times = []
+    seen_time_key = set()
     n_championship = 0
     n_players_ok = 0
     for slot in data:
         if not isinstance(slot, dict):
+            continue
+        # Only the date user selected (API can return multiple dates)
+        slot_date = str(slot.get("Date", "")).strip().replace("-", "")
+        if slot_date != date_eagle:
             continue
         course_name = (slot.get("NineName") or "").strip()
         if course_name.lower() != "championship":
@@ -2139,6 +2144,10 @@ def _fetch_boynton_beach_api(date_iso, players):
         if display_hour == 0:
             display_hour = 12
         time_display = f"{display_hour}:{minute} {period}"
+        time_key = f"{hour:02d}:{minute}"
+        if time_key in seen_time_key:
+            continue
+        seen_time_key.add(time_key)
 
         players_booked = len(slot.get("LstPlayer", []))
         total_slots = int(slot.get("Slots", 4))
@@ -2165,7 +2174,11 @@ def _fetch_boynton_beach_api(date_iso, players):
             "cart_fee": None,
             "rate_type": "Championship",
             "section": "eagleclub_api",
+            "_sort_key": (hour, int(minute)),
         })
+
+    # Chronological order (early to late)
+    times.sort(key=lambda t: t.pop("_sort_key", (0, 0)))
 
     if _boynton_log:
         print(f"  [Boynton API] slots total={len(data)} championship={n_championship} players_ok={n_players_ok} times_returned={len(times)}")
