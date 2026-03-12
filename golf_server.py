@@ -1720,9 +1720,13 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
     }
     try:
         params = {"date": date_iso, "facilityIds": facility_id}
+        # Requested party size so API returns slots for 2, 3, 4 etc. (not only foursomes)
+        if players is not None:
+            params["players"] = players
+            params["groupSize"] = players
         url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
         if _kenna_log:
-            print(f"  [Kenna API] GET {url_with_params} Origin={origin} x-be-alias={be_alias}")
+            print(f"  [Kenna API] GET {url_with_params} players={players} Origin={origin} x-be-alias={be_alias}")
         resp = requests.get(
             KENNA_TEETIMES_URL,
             params=params,
