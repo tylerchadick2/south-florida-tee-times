@@ -1894,7 +1894,7 @@ def fetch_all_direct_teeitup(courses, date_iso, players, before_time=None, on_co
 
 # ─────────────────────────────────────────────
 # Club Caddie (Boca Raton Golf & Racquet) — apimanager-cc22.clubcaddie.com
-# API: /webapi/view/{slug}/slots returns JSON (try HTTP first). Fallback: Selenium DOM.
+# API: POST /webapi/TeeTimes returns HTML (same markup as slots view). We call it directly and parse the HTML.
 # ─────────────────────────────────────────────
 CLUBCADDIE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1904,7 +1904,7 @@ CLUBCADDIE_HEADERS = {
 
 
 def _fetch_direct_clubcaddie_via_api(course, date_iso, players):
-    """Try to get Club Caddie tee times via HTTP GET (same URL as the widget). Returns result dict or None to fall back to Selenium."""
+    """Try to get Club Caddie tee times via HTTP POST to /webapi/TeeTimes, then parse HTML. Returns result dict or None to fall back to Selenium."""
     base = (course.get("scrape_url") or course.get("booking_url", "")).strip()
     if not base:
         return None
@@ -1919,69 +1919,140 @@ def _fetch_direct_clubcaddie_via_api(course, date_iso, players):
     if not interaction:
         return None
     player = max(1, min(4, int(players) if players else 4))
-    url = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
+
+    # Derive host for API and referer/origin
+    from urllib.parse import urlparse
+    parsed = urlparse(base)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    api_base = f"{parsed.scheme}://{parsed.netloc}"
+    api_url = f"{api_base}/webapi/TeeTimes"
+    referer = base
+    headers = dict(CLUBCADDIE_HEADERS)
+    headers.update({
+        "Origin": api_base,
+        "Referer": referer,
+        "X-Requested-With": "XMLHttpRequest",
+    })
+
+    # Form data closely mirrors the browser request; CourseId and apikey are stable for Boca.
+    course_id = "103391"
+    apikey = course.get("clubcaddie_slug") or "ajedabab"
+    form = {
+        "date": date_mmddyyyy,
+        "player": str(player),
+        "holes": "any",
+        "fromtime": "4",
+        "totime": "23",
+        "minprice": "0",
+        "maxprice": "9999",
+        "ratetype": "any",
+        "HoleGroup": "front",
+        "CourseId": course_id,
+        "apikey": apikey,
+        "Interaction": interaction,
+    }
+
     booking_url_with_date = f"{base}?date={date_mmddyyyy.replace('/', '%2F')}&player={player}&ratetype=any&Interaction={interaction}"
+
+    from lxml import html as _html
+    import urllib.parse as _urlparse
     try:
-        resp = requests.get(url, headers=CLUBCADDIE_HEADERS, timeout=12)
+        resp = requests.post(api_url, data=form, headers=headers, timeout=16)
         resp.raise_for_status()
-        data = resp.json()
+        text = resp.text or ""
     except Exception:
         return None
+
+    if not text.strip():
+        return None
+
+    try:
+        tree = _html.fromstring(text)
+    except Exception:
+        return None
+
     times = []
-    time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)\b", re.I)
+    time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(AM|PM)\b", re.I)
     seen = set()
 
-    def process_item(item):
-        if not isinstance(item, dict):
-            return
-        raw_time = (item.get("start_time") or item.get("time") or item.get("tee_time") or
-                    item.get("display_time") or item.get("hour") or "")
-        if not raw_time:
-            return
-        raw_str = str(raw_time).strip()
-        m = time_pat.search(raw_str)
-        if not m:
-            if ":" in raw_str and ("am" in raw_str.lower() or "pm" in raw_str.lower()):
-                t_str = raw_str
+    # Each tee time is a form with id TeeTimeSlotFormN
+    forms = tree.xpath("//form[starts-with(@id, 'TeeTimeSlotForm')]")
+    for form_el in forms:
+        try:
+            # Visible golfers text: e.g. "1" or "1 - 2" or "2 - 4"
+            golfers_text = " ".join(
+                (form_el.xpath(".//*[contains(@class,'tt-golfers')]")[0].itertext())
+            ).strip() if form_el.xpath(".//*[contains(@class,'tt-golfers')]") else ""
+            m_range = re.search(r"(\d+)\s*-\s*(\d+)", golfers_text)
+            if m_range:
+                min_players = int(m_range.group(1))
+                max_players = int(m_range.group(2))
             else:
-                return
-        else:
-            h, min_, period = m.group(1), m.group(2), (m.group(3) or "").upper()
-            t_str = f"{int(h)}:{min_} {period}"
-        key = t_str.upper().replace(" ", "")
-        if key in seen:
-            return
-        seen.add(key)
-        times.append({
-            "time": t_str,
-            "min_players": 1,
-            "max_players": 4,
-            "available_spots": 4,
-            "holes": 18,
-            "green_fee": item.get("price") or item.get("green_fee"),
-            "cart_fee": item.get("cart_fee"),
-            "rate_type": "",
-            "section": "clubcaddie",
-        })
+                m_single = re.search(r"\b(\d+)\b", golfers_text)
+                val = int(m_single.group(1)) if m_single else player
+                min_players = 1
+                max_players = val
 
-    if isinstance(data, list):
-        for item in data:
-            process_item(item)
-    elif isinstance(data, dict):
-        for key in ("slots", "tee_times", "teeTimes", "data", "record", "items", "times"):
-            if key in data and isinstance(data[key], list):
-                for item in data[key]:
-                    process_item(item)
-                break
-        else:
-            process_item(data)
-    if isinstance(data, (dict, list)):
-        return {
-            "status": "ok",
-            "times": times[:120],
-            "booking_url": booking_url_with_date,
-        }
-    return None
+            # Available / minimum from encoded slot JSON
+            slot_val = form_el.xpath(".//input[@name='slot']/@value")
+            players_available = None
+            min_available = None
+            green_fee = None
+            if slot_val:
+                try:
+                    decoded = _urlparse.unquote(slot_val[0])
+                    slot_obj = json.loads(decoded)
+                    players_available = int(slot_obj.get("PlayersAvailable", 0))
+                    min_available = int(slot_obj.get("MinimumPlayersAvailable", 1))
+                    pricing = None
+                    plan = (slot_obj.get("PricingPlan") or []) or []
+                    if plan:
+                        pricing = plan[0].get("HoleRate_18_Pricing") or {}
+                        if not pricing and plan[0].get("HoleRate_18") is not None:
+                            green_fee = float(plan[0].get("HoleRate_18"))
+                    if green_fee is None and pricing:
+                        gf = pricing.get("GreensFees")
+                        if gf is not None:
+                            green_fee = float(gf)
+                except Exception:
+                    pass
+            available_spots = players_available if players_available is not None else max_players
+            if available_spots < players:
+                continue
+
+            # Visible tee time text, e.g. "03:10 PM"
+            tt_nodes = form_el.xpath(".//*[contains(@class,'tt-label') or contains(@class,'tee-time-label')]/text()")
+            raw_time = " ".join(t.strip() for t in tt_nodes if t.strip())
+            m_time = time_pat.search(raw_time)
+            if not m_time:
+                continue
+            h, min_, period = int(m_time.group(1)), m_time.group(2), (m_time.group(3) or "").upper()
+            t_str = f"{h}:{min_} {period}"
+            key = t_str.upper().replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+
+            times.append({
+                "time": t_str,
+                "min_players": min_players,
+                "max_players": max_players,
+                "available_spots": available_spots,
+                "holes": 18,
+                "green_fee": green_fee,
+                "cart_fee": None,
+                "rate_type": "Club Caddie",
+                "section": "clubcaddie_api",
+            })
+        except Exception:
+            continue
+
+    return {
+        "status": "ok",
+        "times": times[:120],
+        "booking_url": booking_url_with_date,
+    }
 
 
 def _fetch_direct_clubcaddie_with_driver(driver, course, date_iso, players):
