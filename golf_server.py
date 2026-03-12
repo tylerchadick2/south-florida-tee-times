@@ -1560,14 +1560,15 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
     except Exception:
         be_alias = "the-florida-club"
     headers = {
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
         "Origin": origin,
         "Referer": referer,
         "x-be-alias": be_alias,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
     }
     try:
-        params = {"date": date_iso, "facilityIds": facility_id, "players": players}
-        url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}&players={players}"
+        params = {"date": date_iso, "facilityIds": facility_id}
+        url_with_params = f"{KENNA_TEETIMES_URL}?date={date_iso}&facilityIds={facility_id}"
         if _kenna_log:
             print(f"  [Kenna API] GET {url_with_params} Origin={origin} x-be-alias={be_alias}")
         resp = requests.get(
@@ -1587,20 +1588,22 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             print(f"  [Kenna API] error: {e}")
         return {"status": "error", "message": str(e)[:100], "booking_url": booking_url, "times": []}
 
-    raw_list = data.get("teetimes") if isinstance(data, dict) else []
+    # API can return: (1) a list of one object with "teetimes" inside, or (2) a dict with "teetimes"
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        raw_list = data[0].get("teetimes") or []
+    elif isinstance(data, dict):
+        raw_list = data.get("teetimes") or []
+    else:
+        raw_list = []
     if not isinstance(raw_list, list):
-        return {"status": "ok", "times": [], "booking_url": booking_url}
+        raw_list = []
     if _kenna_log:
         print(f"  [Kenna API] teetimes count={len(raw_list)} facility_id={facility_id}")
-    if _kenna_log and len(raw_list) == 0 and isinstance(data, dict):
-        # API returned 200 but empty teetimes - log response shape to debug
-        print(f"  [Kenna API] response keys={list(data.keys())}")
-        for k in list(data.keys())[:10]:
-            v = data[k]
-            if isinstance(v, list):
-                print(f"  [Kenna API]   {k!r}: list len={len(v)}")
-            else:
-                print(f"  [Kenna API]   {k!r}: {type(v).__name__}")
+    if _kenna_log and len(raw_list) == 0:
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            print(f"  [Kenna API] response was list[0] keys={list(data[0].keys())}")
+        elif isinstance(data, dict):
+            print(f"  [Kenna API] response keys={list(data.keys())}")
 
     # Parse ISO teetime (UTC) to Eastern for display
     try:
