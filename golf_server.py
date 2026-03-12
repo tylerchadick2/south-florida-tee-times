@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 South Florida Golf Tee Time Checker
-- ForeUp courses (5): direct API call — fast (~1-2s)
-- Chronogolf courses (5): Selenium headless scraping — slower (~15-25s)
+- ForeUp courses: direct API call — fast (~1-2s)
+- Chronogolf courses: HTTP API (marketplace teetimes) — fast (~1-2s)
+- Direct-book courses: Tee It Up / Club Caddie / Eagle Club — browser or API
 
 Run:  python golf_server.py
 Open: http://localhost:5000
@@ -188,6 +189,16 @@ COURSES = [
         "booking_url": "https://player.eagleclubsystems.online/#/tee-slot?dbname=labb20241201",
         "scrape_url": "https://player.eagleclubsystems.online/#/tee-slot?dbname=labb20241201",
     },
+    {
+        "id": 15,
+        "name": "The Park Golf Course",
+        "location": "Lake Worth, FL",
+        "type": "chronogolf",
+        "chronogolf_club_id": 19070,
+        "chronogolf_course_id": 23494,
+        "chronogolf_affiliation_type_id": 117644,
+        "booking_url": "https://www.chronogolf.com/club/19070/widget?medium=widget&source=club",
+    },
 ]
 
 FOREUP_HEADERS = {
@@ -301,17 +312,91 @@ def _foreup_time_to_str(raw):
 
 
 # ─────────────────────────────────────────────
-# CHRONOGOLF - Selenium (network intercept for API response)
-# API evaluation: Chronogolf has no public API; frontend calls internal XHR (we intercept in browser).
-# To switch to HTTP: capture exact API URL from DevTools (Network tab) when loading a club page,
-# then try requests.get with same query (date, groupSize); may need cookies/Referer from first load.
+# CHRONOGOLF - HTTP API (marketplace teetimes endpoint)
+# Courses use: chronogolf_club_id, chronogolf_course_id, chronogolf_affiliation_type_id.
 # ─────────────────────────────────────────────
 
 CHRONOGOLF_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/html, */*",
+    "Accept": "application/json",
     "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.chronogolf.com/",
 }
+
+
+def _chronogolf_time_to_str(raw):
+    """Chronogolf returns start_time as '08:00' or '08:12'. Convert to 8:00am, 8:12am."""
+    raw_str = str(raw).strip()
+    try:
+        if ":" in raw_str:
+            parts = raw_str.split(":")
+            h = int(parts[0])
+            m = int(parts[1][:2]) if len(parts) > 1 else 0
+            period = "am" if h < 12 else "pm"
+            h12 = h % 12 or 12
+            return f"{h12}:{m:02d}{period}"
+        return raw_str
+    except Exception:
+        return raw_str
+
+
+def fetch_chronogolf_times(course, date_iso, players):
+    """
+    Fetch tee times for a Chronogolf course via HTTP API (no browser).
+    GET marketplace/clubs/{club_id}/teetimes?date=YYYY-MM-DD&course_id=...&affiliation_type_ids[]=...&nb_holes=18
+    """
+    import time as _t
+    t0 = _t.monotonic()
+    club_id = course.get("chronogolf_club_id")
+    course_id = course.get("chronogolf_course_id")
+    affiliation_type_id = course.get("chronogolf_affiliation_type_id")
+    if not all([club_id, course_id, affiliation_type_id]):
+        return {"status": "error", "message": "Missing Chronogolf course config", "times": []}
+
+    url = f"https://www.chronogolf.com/marketplace/clubs/{club_id}/teetimes"
+    # API expects affiliation_type_ids[] repeated for group size (e.g. 4 times for 4 players)
+    params_list = [("date", date_iso), ("course_id", course_id)]
+    for _ in range(max(1, min(4, players))):
+        params_list.append(("affiliation_type_ids[]", str(affiliation_type_id)))
+    params_list.append(("nb_holes", "18"))
+
+    try:
+        resp = requests.get(url, params=params_list, headers=CHRONOGOLF_HEADERS, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.Timeout:
+        elapsed = _t.monotonic() - t0
+        _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): REQUEST TIMED OUT after {elapsed:.1f}s")
+        return {"status": "error", "message": "Request timed out", "times": []}
+    except Exception as e:
+        elapsed = _t.monotonic() - t0
+        _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): error in {elapsed:.1f}s — {str(e)[:80]}")
+        return {"status": "error", "message": str(e), "times": []}
+
+    if not isinstance(data, list):
+        return {"status": "error", "message": "Unexpected response", "times": []}
+
+    times = []
+    for slot in data:
+        out_of_capacity = slot.get("out_of_capacity", False)
+        available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
+        if available_spots < players:
+            continue
+        start_time = slot.get("start_time", "")
+        green_fees = slot.get("green_fees") or []
+        green_fee = None
+        if green_fees:
+            gf = green_fees[0]
+            green_fee = gf.get("green_fee") or gf.get("price")
+        times.append({
+            "time": _chronogolf_time_to_str(start_time),
+            "available_spots": available_spots,
+            "holes": 18,
+            "green_fee": green_fee,
+        })
+    elapsed = _t.monotonic() - t0
+    _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): ok in {elapsed:.1f}s, {len(times)} times")
+    return {"status": "ok", "times": times}
 
 def _get_driver():
     from selenium import webdriver
@@ -2931,8 +3016,8 @@ def fetch_course(course, date_iso, players, before_time=None):
 
     if course["type"] == "foreup":
         result = fetch_foreup_times(course, foreup_date, players)
-    # elif course["type"] == "chronogolf":
-    #     result = fetch_chronogolf_times(course, date_iso, players)
+    elif course["type"] == "chronogolf":
+        result = fetch_chronogolf_times(course, date_iso, players)
     elif course["type"] == "direct":
         result = fetch_direct_times(course, date_iso, players, before_time)
     else:
@@ -2994,8 +3079,7 @@ def get_all_teetimes():
     lock = threading.Lock()
 
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
-    # Chronogolf disabled – optimize ForeUp + direct only
-    chrono_courses = []  # was: sorted([c for c in COURSES if c["type"] == "chronogolf"], ...)
+    chrono_courses = [c for c in COURSES if c["type"] == "chronogolf"]
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
     # Slowest direct courses: Boca Raton Golf & Racquet Club (id=13) and Boynton Beach Links (id=14) should run last overall.
     boca_course = next((c for c in direct_courses if c["id"] == 13), None)
@@ -3007,10 +3091,11 @@ def get_all_teetimes():
         with lock:
             results[course["id"]] = result
 
-    # ForeUp + browser in parallel (checkpoint behavior) so total time = max(foreup, browser), not foreup+browser
-    # On Render only: delay browser start by 3s so ForeUp gets a head start without Chrome memory contention
-    foreup_threads = [threading.Thread(target=course_worker, args=(c,)) for c in foreup_courses]
-    for t in foreup_threads:
+    # ForeUp + Chronogolf (both HTTP, fast) in parallel; then browser for direct only.
+    # On Render only: delay browser start by 3s so ForeUp/Chronogolf get a head start without Chrome memory contention
+    api_courses = foreup_courses + chrono_courses
+    api_threads = [threading.Thread(target=course_worker, args=(c,)) for c in api_courses]
+    for t in api_threads:
         t.start()
 
     chrono_results = {}
@@ -3021,10 +3106,7 @@ def get_all_teetimes():
                 with lock:
                     results[cid] = res
             fetch_all_direct_parallel(direct_fast, date_str, players, before_time=before_time, on_course_done=direct_done)
-        # Chronogolf disabled
-        r = {}
-        with lock:
-            chrono_results.update(r)
+        chrono_results = {}  # Chronogolf runs in api_threads, not here
         # Run slowest courses sequentially at the end so they never delay others.
         for slow_course in [c for c in (boynton_course, boca_course) if c]:
             def slow_done(cid, res):
@@ -3042,17 +3124,17 @@ def get_all_teetimes():
         browser_thread = threading.Thread(target=browser_worker)
     browser_thread.start()
 
-    for t in foreup_threads:
+    for t in api_threads:
         t.join(timeout=15)
-    foreup_elapsed = _req_time.monotonic() - request_start
-    foreup_done = [c["id"] for c in foreup_courses if c["id"] in results]
-    foreup_missing = [c["id"] for c in foreup_courses if c["id"] not in results]
-    if foreup_missing:
-        _request_log(f"ForeUp join: {len(foreup_done)}/{len(foreup_courses)} completed in {foreup_elapsed:.1f}s; TIMED OUT ids={foreup_missing}")
+    api_elapsed = _req_time.monotonic() - request_start
+    api_done = [c["id"] for c in api_courses if c["id"] in results]
+    api_missing = [c["id"] for c in api_courses if c["id"] not in results]
+    if api_missing:
+        _request_log(f"ForeUp/Chronogolf join: {len(api_done)}/{len(api_courses)} completed in {api_elapsed:.1f}s; TIMED OUT ids={api_missing}")
     else:
-        _request_log(f"ForeUp join: all {len(foreup_courses)} completed in {foreup_elapsed:.1f}s")
+        _request_log(f"ForeUp/Chronogolf join: all {len(api_courses)} completed in {api_elapsed:.1f}s")
 
-    n_browser_courses = len(direct_courses) + len(chrono_courses)
+    n_browser_courses = len(direct_courses)
     browser_join = max(180, 50 * n_browser_courses) if _max_browser_workers() == 1 else 180
     browser_thread.join(timeout=browser_join)
     results.update(chrono_results)
@@ -3061,7 +3143,7 @@ def get_all_teetimes():
     # Fill in any missing (timeouts; direct courses already set above)
     for course in COURSES:
         if course["id"] not in results:
-            ctype = "ForeUp" if course.get("type") == "foreup" else "Direct"
+            ctype = "ForeUp" if course.get("type") == "foreup" else "Chronogolf" if course.get("type") == "chronogolf" else "Direct"
             _request_log(f"TIMEOUT: {course.get('name', '')} (id={course['id']}) [{ctype}] — filling 'Timed out'")
             results[course["id"]] = {
                 "status": "error",
@@ -3085,7 +3167,7 @@ def get_all_teetimes_stream():
         return jsonify({"status": "error", "message": "Missing date"}), 400
 
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
-    chrono_courses = []  # Chronogolf disabled
+    chrono_courses = [c for c in COURSES if c["type"] == "chronogolf"]
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
     boca_course = next((c for c in direct_courses if c["id"] == 13), None)
     boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
@@ -3097,6 +3179,10 @@ def get_all_teetimes_stream():
         result = fetch_course(course, date_str, players, before_time)
         q.put((course["id"], result))
 
+    # ForeUp + Chronogolf (HTTP) each get their own thread; browser_worker does direct only
+    for c in foreup_courses + chrono_courses:
+        threading.Thread(target=course_worker, args=(c,), daemon=True).start()
+
     def browser_worker():
         try:
             # 1) Stream non-slow direct courses first.
@@ -3105,9 +3191,7 @@ def get_all_teetimes_stream():
                     q.put((cid, res))
                 fetch_all_direct_parallel(direct_fast, date_str, players, before_time=before_time, on_course_done=direct_done)
 
-            # 2) Chronogolf disabled – was: fetch_all_chronogolf(chrono_courses, ...)
-            # def chrono_done(cid, res): ...
-            # fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
+            # 2) Chronogolf runs in course_worker threads above (HTTP API).
 
             # 3) Stream slowest direct courses last so they never delay other courses.
             for slow_course in [c for c in (boynton_course, boca_course) if c]:
@@ -3115,12 +3199,9 @@ def get_all_teetimes_stream():
                     q.put((cid, res))
                 fetch_all_direct_parallel([slow_course], date_str, players, before_time=before_time, on_course_done=slow_done)
         except Exception as e:
-            # Chronogolf disabled – no chrono_courses to push
             pass
 
-    for c in foreup_courses:
-        threading.Thread(target=course_worker, args=(c,), daemon=True).start()
-    # On Render, delay Chrome 3s so ForeUp gets a head start without memory contention
+    # On Render, delay Chrome 3s so ForeUp/Chronogolf get a head start without memory contention
     if _is_render():
         def delayed_browser():
             import time as _t
@@ -3183,9 +3264,11 @@ if __name__ == "__main__":
     print("━" * 44)
     check_dependencies()
     n_fore = len([c for c in COURSES if c["type"] == "foreup"])
+    n_chrono = len([c for c in COURSES if c["type"] == "chronogolf"])
     n_direct = len([c for c in COURSES if c["type"] == "direct"])
     print(f"   ForeUp courses    ({n_fore}) → ~1-3s each")
-    # print(f"   Chronogolf courses (disabled)")
+    if n_chrono:
+        print(f"   Chronogolf (API)  ({n_chrono}) → ~1-3s each")
     if n_direct:
         print(f"   Direct-book only  ({n_direct}) → link to course site")
     w = _max_browser_workers()
