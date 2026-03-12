@@ -2926,9 +2926,10 @@ def get_all_teetimes():
     # Chronogolf disabled – optimize ForeUp + direct only
     chrono_courses = []  # was: sorted([c for c in COURSES if c["type"] == "chronogolf"], ...)
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
-    # Boynton Beach Links (id=14) should run last overall so slow behavior never blocks other results.
+    # Slowest direct courses: Boca Raton Golf & Racquet Club (id=13) and Boynton Beach Links (id=14) should run last overall.
+    boca_course = next((c for c in direct_courses if c["id"] == 13), None)
     boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
-    direct_non_boynton = [c for c in direct_courses if c["id"] != 14]
+    direct_fast = [c for c in direct_courses if c["id"] not in (13, 14)]
 
     def course_worker(course):
         result = fetch_course(course, date_str, players, before_time)
@@ -2944,20 +2945,21 @@ def get_all_teetimes():
     chrono_results = {}
     def browser_worker():
         nonlocal chrono_results
-        if direct_non_boynton:
+        if direct_fast:
             def direct_done(cid, res):
                 with lock:
                     results[cid] = res
-            fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
+            fetch_all_direct_parallel(direct_fast, date_str, players, before_time=before_time, on_course_done=direct_done)
         # Chronogolf disabled
         r = {}
         with lock:
             chrono_results.update(r)
-        if boynton_course:
-            def boynton_done(cid, res):
+        # Run slowest courses sequentially at the end so they never delay others.
+        for slow_course in [c for c in (boynton_course, boca_course) if c]:
+            def slow_done(cid, res):
                 with lock:
                     results[cid] = res
-            fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
+            fetch_all_direct_parallel([slow_course], date_str, players, before_time=before_time, on_course_done=slow_done)
 
     if _is_render():
         def delayed_browser():
@@ -3014,8 +3016,9 @@ def get_all_teetimes_stream():
     foreup_courses = [c for c in COURSES if c["type"] == "foreup"]
     chrono_courses = []  # Chronogolf disabled
     direct_courses = [c for c in COURSES if c["type"] == "direct"]
+    boca_course = next((c for c in direct_courses if c["id"] == 13), None)
     boynton_course = next((c for c in direct_courses if c["id"] == 14), None)
-    direct_non_boynton = [c for c in direct_courses if c["id"] != 14]
+    direct_fast = [c for c in direct_courses if c["id"] not in (13, 14)]
     q = Queue()
     total = len(COURSES)
 
@@ -3025,21 +3028,21 @@ def get_all_teetimes_stream():
 
     def browser_worker():
         try:
-            # 1) Stream non-Boynton direct courses first.
-            if direct_non_boynton:
+            # 1) Stream non-slow direct courses first.
+            if direct_fast:
                 def direct_done(cid, res):
                     q.put((cid, res))
-                fetch_all_direct_parallel(direct_non_boynton, date_str, players, before_time=before_time, on_course_done=direct_done)
+                fetch_all_direct_parallel(direct_fast, date_str, players, before_time=before_time, on_course_done=direct_done)
 
             # 2) Chronogolf disabled – was: fetch_all_chronogolf(chrono_courses, ...)
             # def chrono_done(cid, res): ...
             # fetch_all_chronogolf(chrono_courses, date_str, players, on_course_done=chrono_done)
 
-            # 3) Stream Boynton Beach Links last so it never delays other courses.
-            if boynton_course:
-                def boynton_done(cid, res):
+            # 3) Stream slowest direct courses last so they never delay other courses.
+            for slow_course in [c for c in (boynton_course, boca_course) if c]:
+                def slow_done(cid, res):
                     q.put((cid, res))
-                fetch_all_direct_parallel([boynton_course], date_str, players, before_time=before_time, on_course_done=boynton_done)
+                fetch_all_direct_parallel([slow_course], date_str, players, before_time=before_time, on_course_done=slow_done)
         except Exception as e:
             # Chronogolf disabled – no chrono_courses to push
             pass
