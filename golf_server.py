@@ -1589,6 +1589,8 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
     raw_list = data.get("teetimes") if isinstance(data, dict) else []
     if not isinstance(raw_list, list):
         return {"status": "ok", "times": [], "booking_url": booking_url}
+    if _kenna_log:
+        print(f"  [Kenna API] teetimes count={len(raw_list)} facility_id={facility_id}")
 
     # Parse ISO teetime (UTC) to Eastern for display
     try:
@@ -1627,13 +1629,8 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         available = max(0, max_players - booked)
         if available < players:
             continue
+        # Don't filter by allowedPlayers: if there are enough spots (available >= players), show the time
         rates = slot.get("rates") or []
-        allowed = set()
-        for r in rates:
-            for p in r.get("allowedPlayers") or []:
-                allowed.add(int(p))
-        if allowed and players not in allowed:
-            continue
 
         green_fee = None
         if rates:
@@ -1669,6 +1666,8 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             return (h, min_val)
         return (0, 0)
     times.sort(key=_sort_key)
+    if _kenna_log:
+        print(f"  [Kenna API] after filters: times_returned={len(times)} facility_id={facility_id}")
     return {"status": "ok", "times": times, "booking_url": booking_url}
 
 
