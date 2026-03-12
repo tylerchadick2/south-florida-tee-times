@@ -360,8 +360,10 @@ def fetch_chronogolf_times(course, date_iso, players):
     for _ in range(max(1, min(4, players))):
         params_list.append(("affiliation_type_ids[]", str(affiliation_type_id)))
     params_list.append(("nb_holes", "18"))
-    params_list.append(("holes", "18"))  # some Chronogolf endpoints use "holes"
 
+    # #region agent log
+    _debug_log("fetch_chronogolf_times:params", "request params", {"params_list": params_list, "url": url}, "H3")
+    # #endregion
     _request_log(f"Chronogolf API [{course.get('name', '')}]: GET {url} params: date={date_iso} course_id={course_id} players={players}")
     try:
         resp = requests.get(url, params=params_list, headers=CHRONOGOLF_HEADERS, timeout=15)
@@ -373,6 +375,15 @@ def fetch_chronogolf_times(course, date_iso, players):
             _request_log(f"Chronogolf API [{course.get('name', '')}]: unexpected body type {type(data).__name__} (expected list)")
             return {"status": "error", "message": "Unexpected response", "times": []}
         _request_log(f"Chronogolf API [{course.get('name', '')}]: got {len(data)} raw slots")
+        # #region agent log
+        if data:
+            s0 = data[0]
+            hole_related = {k: s0.get(k) for k in list(s0.keys()) if "hole" in k.lower() or k in ("course", "course_id", "product", "product_name", "round", "format", "nb_holes", "holes")}
+            _debug_log("fetch_chronogolf_times:first_slot", "first slot hole-related keys and values", {"slot_keys": list(s0.keys()), "hole_related": hole_related, "green_fees_0_keys": list((s0.get("green_fees") or [{}])[0].keys()) if s0.get("green_fees") else None}, "H1")
+            gf0 = (s0.get("green_fees") or [{}])[0] if s0.get("green_fees") else {}
+            if isinstance(gf0, dict):
+                _debug_log("fetch_chronogolf_times:green_fees_0", "first green_fee hole-related", {k: gf0.get(k) for k in list(gf0.keys()) if "hole" in k.lower() or k in ("nb_holes", "holes", "course")}, "H4")
+        # #endregion
     except requests.exceptions.Timeout:
         elapsed = _t.monotonic() - t0
         _request_log(f"Chronogolf API [{course.get('name', '')}]: REQUEST TIMED OUT after {elapsed:.1f}s")
@@ -384,7 +395,7 @@ def fetch_chronogolf_times(course, date_iso, players):
 
     def _slot_hole_count(slot):
         """Get hole count from slot; API may use nb_holes, holes, or nested. Returns int or None."""
-        v = slot.get("nb_holes") or slot.get("holes")
+        v = slot.get("nb_holes") or slot.get("holes") or slot.get("number_of_holes") or slot.get("hole_count")
         if v is not None:
             try:
                 return int(v)
@@ -418,10 +429,18 @@ def fetch_chronogolf_times(course, date_iso, players):
         return None
 
     times = []
+    slot_log_count = [0]
     for slot in data:
         # Only 18-hole times: we request nb_holes=18; exclude only when slot explicitly says 9 holes
         slot_holes = _slot_hole_count(slot)
-        if slot_holes is not None and slot_holes != 18:
+        included = not (slot_holes is not None and slot_holes != 18)
+        if slot_log_count[0] < 8:
+            # #region agent log
+            _debug_log("fetch_chronogolf_times:slot_filter", "slot hole check", {"start_time": slot.get("start_time"), "slot_holes": slot_holes, "included": included, "slot_keys": list(slot.keys()) if slot_holes is None else None}, "H2")
+            slot_log_count[0] += 1
+            # #endregion
+        # Only 18-hole: include only when slot explicitly has 18 holes; exclude 9 and unknown
+        if slot_holes != 18:
             continue
         out_of_capacity = slot.get("out_of_capacity", False)
         available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
@@ -440,6 +459,9 @@ def fetch_chronogolf_times(course, date_iso, players):
             "green_fee": green_fee,
         })
     elapsed = _t.monotonic() - t0
+    # #region agent log
+    _debug_log("fetch_chronogolf_times:counts", "raw vs filtered count", {"raw_slots": len(data), "times_returned": len(times)}, "H2")
+    # #endregion
     _request_log(f"Chronogolf {course.get('name', '')} (id={course.get('id')}): ok in {elapsed:.1f}s, {len(times)} times")
     return {"status": "ok", "times": times}
 
