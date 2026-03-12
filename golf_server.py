@@ -2028,8 +2028,8 @@ def _fetch_boynton_beach_api(date_iso, players):
     Only returns Championship course times; filters by requested player count.
     """
     date_eagle = date_iso.replace("-", "")
-    now = datetime.now()
-    current_time = now.strftime("%H%M")
+    # Request all slots for the day; we filter by before_time on our side (StrTime = current time often returns nothing due to timezone)
+    str_time = "0000"
     players = max(1, min(4, int(players))) if players is not None else 4
 
     headers = {
@@ -2049,7 +2049,7 @@ def _fetch_boynton_beach_api(date_iso, players):
         "OnlineBookingFormat": 0,
         "OnlineBookingMaxDays": 8,
         "StrDate": date_eagle,
-        "StrTime": current_time,
+        "StrTime": str_time,
         "TeePriceClassID": 85,
     }
 
@@ -2090,8 +2090,8 @@ def _fetch_boynton_beach_api(date_iso, players):
         course_name = (slot.get("NineName") or "").strip()
         if course_name.lower() != "championship":
             continue
-        time_str = slot.get("Time", "")
-        if len(time_str) != 4:
+        time_str = str(slot.get("Time", "")).strip()
+        if len(time_str) != 4 or not time_str.isdigit():
             continue
         hour = int(time_str[:2])
         minute = time_str[2:]
