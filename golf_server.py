@@ -360,6 +360,7 @@ def fetch_chronogolf_times(course, date_iso, players):
     for _ in range(max(1, min(4, players))):
         params_list.append(("affiliation_type_ids[]", str(affiliation_type_id)))
     params_list.append(("nb_holes", "18"))
+    params_list.append(("holes", "18"))  # some Chronogolf endpoints use "holes"
 
     _request_log(f"Chronogolf API [{course.get('name', '')}]: GET {url} params: date={date_iso} course_id={course_id} players={players}")
     try:
@@ -381,11 +382,50 @@ def fetch_chronogolf_times(course, date_iso, players):
         _request_log(f"Chronogolf API [{course.get('name', '')}]: error in {elapsed:.1f}s — {type(e).__name__}: {str(e)[:120]}")
         return {"status": "error", "message": str(e), "times": []}
 
+    def _slot_hole_count(slot):
+        """Get hole count from slot; API may use nb_holes, holes, or nested. Returns int or None."""
+        v = slot.get("nb_holes") or slot.get("holes")
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                pass
+        # Some APIs return "course": "18 holes" or similar
+        course = slot.get("course") or slot.get("product_name") or ""
+        if isinstance(course, str):
+            if "18" in course and "9" not in course.replace("18", ""):
+                return 18
+            if "9" in course and "18" not in course:
+                return 9
+        # Nested product/offer or in first green_fee
+        for key in ("product", "offer", "rate"):
+            obj = slot.get(key)
+            if isinstance(obj, dict):
+                n = obj.get("nb_holes") or obj.get("holes")
+                if n is not None:
+                    try:
+                        return int(n)
+                    except (TypeError, ValueError):
+                        pass
+        gfs = slot.get("green_fees") or []
+        if gfs and isinstance(gfs[0], dict):
+            n = gfs[0].get("nb_holes") or gfs[0].get("holes")
+            if n is not None:
+                try:
+                    return int(n)
+                except (TypeError, ValueError):
+                    pass
+        return None
+
     times = []
+    logged_keys = [False]
     for slot in data:
-        # Only 18-hole times (we request nb_holes=18; filter in case API ever returns mixed)
-        slot_holes = slot.get("nb_holes") or slot.get("holes")
-        if slot_holes is not None and int(slot_holes) != 18:
+        # Only 18-hole times: include only when we have positive confirmation of 18
+        slot_holes = _slot_hole_count(slot)
+        if slot_holes != 18:
+            if slot_holes is None and not logged_keys[0]:
+                _request_log(f"Chronogolf API [{course.get('name', '')}]: slot keys (first) {list(data[0].keys())} — no hole count found, filtering to 18-only")
+                logged_keys[0] = True
             continue
         out_of_capacity = slot.get("out_of_capacity", False)
         available_spots = 0 if out_of_capacity else 4  # Chronogolf slot is typically 4 players
