@@ -1797,8 +1797,8 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         max_players = int(slot.get("maxPlayers", 4))
         booked = int(slot.get("bookedPlayers", 0))
         available = max(0, max_players - booked)
-        # Show times where maxPlayers <= user's selection (e.g. 2 players → show slots with max 1 or 2)
-        if max_players > players:
+        # User's selection must be between or equal to slot's min and max (e.g. min=1 max=2 → show for 1 or 2; min=1 max=4 → show for 1,2,3,4)
+        if not (min_players <= players <= max_players):
             continue
         if available < players:
             continue
