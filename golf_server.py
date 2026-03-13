@@ -1789,42 +1789,58 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             time_key = f"{hour:02d}:{minute:02d}"
         except Exception:
             continue
-        if time_key in seen_key:
-            continue
-        seen_key.add(time_key)
 
-        min_players = int(slot.get("minPlayers", 1))
-        max_players = int(slot.get("maxPlayers", 4))
-        booked = int(slot.get("bookedPlayers", 0))
-        available = max(0, max_players - booked)
-        # User's selection must be between or equal to slot's min and max (e.g. min=1 max=2 → show for 1 or 2; min=1 max=4 → show for 1,2,3,4)
-        if not (min_players <= players <= max_players):
-            continue
+        # Min/max can be on slot or on each rate (API varies); slot-level for available count
+        slot_min = int(slot.get("minPlayers") or slot.get("min_players") or 1)
+        slot_max = int(slot.get("maxPlayers") or slot.get("max_players") or 4)
+        booked = int(slot.get("bookedPlayers") or slot.get("booked_players") or 0)
+        available = max(0, slot_max - booked)
         if available < players:
             continue
         rates = slot.get("rates") or []
-
-        green_fee = None
-        if rates:
-            cents = rates[0].get("greenFeeCart")
-            if cents is not None:
-                try:
-                    green_fee = int(cents) / 100.0
-                except (TypeError, ValueError):
-                    pass
-        rate_name = (rates[0].get("name") or "").strip() if rates else ""
-
-        times.append({
-            "time": time_display,
-            "min_players": int(slot.get("minPlayers", 1)),
-            "max_players": max_players,
-            "available_spots": available,
-            "holes": 18,
-            "green_fee": green_fee,
-            "cart_fee": None,
-            "rate_type": rate_name or "TeeItUp",
-            "section": "kenna_api",
-        })
+        # Build distinct (min,max) ranges: from slot level and/or from each rate that has its own min/max
+        rate_ranges = []
+        if rates and isinstance(rates[0], dict):
+            for r in rates:
+                r_min = r.get("minPlayers") or r.get("min_players")
+                r_max = r.get("maxPlayers") or r.get("max_players")
+                if r_min is not None or r_max is not None:
+                    r_min = int(r_min if r_min is not None else slot_min)
+                    r_max = int(r_max if r_max is not None else slot_max)
+                    if (r_min, r_max) not in rate_ranges:
+                        rate_ranges.append((r_min, r_max))
+        if not rate_ranges:
+            rate_ranges = [(slot_min, slot_max)]
+        # Emit one row per (time, min, max) that includes requested players
+        for (min_players, max_players) in rate_ranges:
+            if not (min_players <= players <= max_players):
+                continue
+            dedupe_key = (time_key, min_players, max_players)
+            if dedupe_key in seen_key:
+                continue
+            seen_key.add(dedupe_key)
+            green_fee = None
+            rate_name = ""
+            if rates and isinstance(rates[0], dict):
+                r0 = rates[0]
+                cents = r0.get("greenFeeCart")
+                if cents is not None:
+                    try:
+                        green_fee = int(cents) / 100.0
+                    except (TypeError, ValueError):
+                        pass
+                rate_name = (r0.get("name") or "").strip()
+            times.append({
+                "time": time_display,
+                "min_players": min_players,
+                "max_players": max_players,
+                "available_spots": available,
+                "holes": 18,
+                "green_fee": green_fee,
+                "cart_fee": None,
+                "rate_type": rate_name or "TeeItUp",
+                "section": "kenna_api",
+            })
 
     def _sort_key(t):
         s = t.get("time") or ""
