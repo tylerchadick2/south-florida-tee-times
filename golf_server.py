@@ -219,6 +219,16 @@ COURSES = [
         "chronogolf_affiliation_type_id": 133162,
         "booking_url": "https://www.chronogolf.com/club/19435/widget?medium=widget&source=club",
     },
+    {
+        "id": 18,
+        "name": "Country Club of Coral Springs",
+        "location": "Coral Springs, FL",
+        "type": "direct",
+        "direct_scraper": "teeitup",
+        "teeitup_course_id": "4572",
+        "booking_url": "https://country-club-of-coral-springs.book.teeitup.com/?course=4572&max=999999",
+        "scrape_url": "https://country-club-of-coral-springs.book.teeitup.com/?course=4572&max=999999",
+    },
 ]
 
 FOREUP_HEADERS = {
