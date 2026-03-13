@@ -199,6 +199,16 @@ COURSES = [
         "chronogolf_affiliation_type_id": 117644,
         "booking_url": "https://www.chronogolf.com/club/19070/widget?medium=widget&source=club",
     },
+    {
+        "id": 16,
+        "name": "Westchester Country Club",
+        "location": "Boynton Beach, FL",
+        "type": "chronogolf",
+        "chronogolf_club_id": 4586,
+        "chronogolf_course_id": 5397,
+        "chronogolf_affiliation_type_id": 19166,
+        "booking_url": "https://www.chronogolf.com/club/4586/widget?medium=widget&source=club",
+    },
 ]
 
 FOREUP_HEADERS = {
