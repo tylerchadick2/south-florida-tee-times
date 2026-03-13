@@ -209,6 +209,16 @@ COURSES = [
         "chronogolf_affiliation_type_id": 19166,
         "booking_url": "https://www.chronogolf.com/club/4586/widget?medium=widget&source=club",
     },
+    {
+        "id": 17,
+        "name": "Winston Trails Golf Club",
+        "location": "Lake Worth, FL",
+        "type": "chronogolf",
+        "chronogolf_club_id": 19435,
+        "chronogolf_course_id": 27095,
+        "chronogolf_affiliation_type_id": 133162,
+        "booking_url": "https://www.chronogolf.com/club/19435/widget?medium=widget&source=club",
+    },
 ]
 
 FOREUP_HEADERS = {
