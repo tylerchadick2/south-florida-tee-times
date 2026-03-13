@@ -1800,11 +1800,6 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
         allowed_set = set(int(a) for a in allowed if a is not None)
         if players not in allowed_set:
             continue
-        slot_max = int(slot.get("maxPlayers") or slot.get("max_players") or (max(allowed_set) if allowed_set else 4))
-        booked = int(slot.get("bookedPlayers") or slot.get("booked_players") or 0)
-        available = max(0, slot_max - booked)
-        if available < players:
-            continue
         min_players = min(allowed_set) if allowed_set else 1
         max_players = max(allowed_set) if allowed_set else 4
         dedupe_key = (time_key, min_players, max_players)
@@ -1827,7 +1822,7 @@ def _fetch_teeitup_kenna_api(course, date_iso, players):
             "time": time_display,
             "min_players": min_players,
             "max_players": max_players,
-            "available_spots": available,
+            "available_spots": max_players,
             "holes": 18,
             "green_fee": green_fee,
             "cart_fee": None,
