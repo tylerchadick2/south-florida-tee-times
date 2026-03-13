@@ -229,6 +229,15 @@ COURSES = [
         "booking_url": "https://country-club-of-coral-springs.book.teeitup.com/?course=4572&max=999999",
         "scrape_url": "https://country-club-of-coral-springs.book.teeitup.com/?course=4572&max=999999",
     },
+    {
+        "id": 19,
+        "name": "Plantation (Parks)",
+        "location": "Plantation, FL",
+        "type": "direct",
+        "direct_scraper": "plantation",
+        "booking_url": "https://parks.plantation.org/webtrac/web/search.html",
+        "scrape_url": "https://parks.plantation.org/webtrac/web/search.html",
+    },
 ]
 
 FOREUP_HEADERS = {
@@ -2618,6 +2627,141 @@ def _fetch_boynton_beach_api(date_iso, players):
     return {"status": "ok", "times": times, "booking_url": BOYNTON_BOOKING_URL}
 
 
+# ─────────────────────────────────────────────
+# Plantation (parks.plantation.org webtrac) — HTTP GET search, parse HTML for time + open slots
+# ─────────────────────────────────────────────
+PLANTATION_SEARCH_BASE = "https://parks.plantation.org/webtrac/web/search.html"
+PLANTATION_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://parks.plantation.org/webtrac/web/search.html",
+}
+
+
+def _fetch_direct_plantation(course, date_iso, players, before_time=None):
+    """Plantation parks webtrac: build URL with user's date and players, GET once, parse HTML for times and open slots."""
+    from lxml import html as _html
+    from urllib.parse import urlencode
+    booking_url = course.get("booking_url") or PLANTATION_SEARCH_BASE
+    try:
+        dt = datetime.strptime(date_iso, "%Y-%m-%d")
+        begindate = dt.strftime("%m/%d/%Y")  # 03/17/2026
+    except ValueError:
+        return {"status": "error", "message": "Invalid date", "booking_url": booking_url, "times": []}
+    players = max(1, min(4, int(players))) if players is not None else 4
+    params = {
+        "Action": "Start",
+        "SubAction": "",
+        "_csrf_token": "",
+        "secondarycode": "",
+        "numberofplayers": str(players),
+        "begindate": begindate,
+        "begintime": "06:00 am",
+        "numberofholes": "18",
+        "reservee": "",
+        "display": "Detail",
+        "module": "GR",
+        "multiselectlist_value": "",
+        "grwebsearch_buttonsearch": "yes",
+    }
+    url = PLANTATION_SEARCH_BASE + "?" + urlencode(params)
+    try:
+        resp = requests.get(url, headers=PLANTATION_HEADERS, timeout=15)
+        resp.raise_for_status()
+        html_content = resp.text or ""
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "Request timed out", "booking_url": booking_url, "times": []}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:100], "booking_url": booking_url, "times": []}
+    try:
+        tree = _html.fromstring(html_content)
+    except Exception:
+        return {"status": "error", "message": "Invalid HTML", "booking_url": booking_url, "times": []}
+    time_pat = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm)\b", re.I)
+    times = []
+    seen = set()
+    # Try table rows first (common webtrac layout: tr with td for time and open slots)
+    for tr in tree.xpath("//tr"):
+        tds = tr.xpath(".//td")
+        if len(tds) < 2:
+            continue
+        row_text = " ".join((t.text_content() if hasattr(t, "text_content") else (t.text or "")) for t in tds)
+        m_time = time_pat.search(row_text)
+        if not m_time:
+            continue
+        h, min_val = int(m_time.group(1)), int(m_time.group(2))
+        period = (m_time.group(3) or "").lower()
+        if period == "pm" and h != 12:
+            h += 12
+        elif period == "am" and h == 12:
+            h = 0
+        time_str = f"{h % 12 or 12}:{min_val:02d}{'pm' if h >= 12 else 'am'}"
+        # Find open slots: number 1-4 in row (often "4 open" or just "4")
+        open_slots = 0
+        for t in tds:
+            txt = getattr(t, "text_content", lambda: getattr(t, "text", "") or "")() or ""
+            nums = re.findall(r"\b([1-4])\b", txt)
+            if nums:
+                open_slots = max(open_slots, int(nums[-1]))
+        if open_slots == 0:
+            open_slots = 4
+        if open_slots < players:
+            continue
+        key = f"{h:02d}:{min_val:02d}"
+        if key in seen:
+            continue
+        seen.add(key)
+        times.append({
+            "time": time_str,
+            "min_players": 1,
+            "max_players": 4,
+            "available_spots": open_slots,
+            "holes": 18,
+            "green_fee": None,
+            "cart_fee": None,
+            "rate_type": "",
+            "section": "plantation",
+        })
+    # Fallback: no table rows — scan full body for time + slot pattern
+    if not times:
+        body_text = tree.xpath("string(//body)") if hasattr(tree, "xpath") else ""
+        if not body_text:
+            body_text = (html_content or "")[:50000]
+        for m in time_pat.finditer(body_text):
+            h, min_val = int(m.group(1)), int(m.group(2))
+            period = (m.group(3) or "").lower()
+            if period == "pm" and h != 12:
+                h += 12
+            elif period == "am" and h == 12:
+                h = 0
+            key = f"{h:02d}:{min_val:02d}"
+            if key in seen:
+                continue
+            chunk = body_text[max(0, m.start() - 20):m.end() + 40]
+            slots = re.findall(r"\b([1-4])\s*(?:open|slot|available)?", chunk, re.I)
+            open_slots = int(slots[-1]) if slots else 4
+            if open_slots < players:
+                continue
+            seen.add(key)
+            time_str = f"{h % 12 or 12}:{min_val:02d}{'pm' if h >= 12 else 'am'}"
+            times.append({
+                "time": time_str,
+                "min_players": 1,
+                "max_players": 4,
+                "available_spots": open_slots,
+                "holes": 18,
+                "green_fee": None,
+                "cart_fee": None,
+                "rate_type": "",
+                "section": "plantation",
+            })
+    if before_time and times:
+        times = apply_time_filter(times, before_time)
+    times.sort(key=lambda t: (_parse_slot_time(t.get("time")) or datetime.min.time(),))
+    return {"status": "ok", "times": times, "booking_url": booking_url}
+
+
 # Legacy Selenium path (kept for reference; not used when API is used)
 def _fetch_direct_eagleclub_with_driver(driver, course, date_iso, players):
     """Eagle Club: load page, click date card for target date, click player count (1-4), set dropdown to Championship, parse tee time cards."""
@@ -2895,6 +3039,15 @@ def _fetch_one_direct_course(course, date_iso, players, before_time=None):
                 if t.get("time"):
                     t["time"] = _normalize_tee_time_display(t["time"])
         return (course["id"], result)
+    # Plantation parks webtrac: HTTP GET + HTML parse (no browser)
+    if scraper == "plantation":
+        result = _fetch_direct_plantation(course, date_iso, players, before_time)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
+        if result.get("status") == "ok" and result.get("times"):
+            for t in result["times"]:
+                if t.get("time"):
+                    t["time"] = _normalize_tee_time_display(t["time"])
+        return (course["id"], result)
     try:
         driver = _get_driver()
         if scraper == "golfnow":
@@ -3009,6 +3162,9 @@ def fetch_direct_times(course, date_iso, players, before_time=None):
         result = fetch_direct_clubcaddie(course, date_iso, players)
     elif scraper == "eagleclub":
         result = _fetch_boynton_beach_api(date_iso, players)
+        result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
+    elif scraper == "plantation":
+        result = _fetch_direct_plantation(course, date_iso, players, before_time)
         result["booking_url"] = result.get("booking_url") or course.get("booking_url", "")
     else:
         result = {"status": "error", "message": "No scraper configured", "booking_url": course.get("booking_url", ""), "times": []}
