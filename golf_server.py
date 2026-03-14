@@ -2697,16 +2697,27 @@ def _fetch_direct_plantation(course, date_iso, players, before_time=None):
         elif period == "am" and h == 12:
             h = 0
         time_str = f"{h % 12 or 12}:{min_val:02d}{'pm' if h >= 12 else 'am'}"
-        # Find open slots: number 1-4 in row (often "4 open" or just "4")
-        open_slots = 0
+        # Parse open slots from row: look for "X open", "open X", "X slot(s)", or number in a cell that suggests availability
+        open_slots = None
         for t in tds:
-            txt = getattr(t, "text_content", lambda: getattr(t, "text", "") or "")() or ""
-            nums = re.findall(r"\b([1-4])\b", txt)
-            if nums:
-                open_slots = max(open_slots, int(nums[-1]))
-        if open_slots == 0:
-            open_slots = 4
-        if open_slots < players:
+            txt = (getattr(t, "text_content", lambda: getattr(t, "text", "") or "")() or "").strip()
+            # "4 open", "open 4", "4 slots", "4 available", or column that is just a single digit 1-4
+            m_open = re.search(r"(?:(\d+)\s*open|open\s*(\d+)|(\d+)\s*slots?|(\d+)\s*available)", txt, re.I)
+            if m_open:
+                open_slots = int(m_open.group(1) or m_open.group(2) or m_open.group(3) or m_open.group(4) or "0")
+                break
+            if re.search(r"open|slot|available", txt, re.I) and re.search(r"\b(\d+)\b", txt):
+                n = re.search(r"\b(\d+)\b", txt)
+                if n:
+                    open_slots = int(n.group(1))
+                    break
+        if open_slots is None:
+            for t in tds:
+                txt = (getattr(t, "text_content", lambda: getattr(t, "text", "") or "")() or "").strip()
+                if re.match(r"^[1-4]$", txt.strip()):
+                    open_slots = int(txt.strip())
+                    break
+        if open_slots is None or open_slots < players:
             continue
         key = f"{h:02d}:{min_val:02d}"
         if key in seen:
@@ -2738,10 +2749,15 @@ def _fetch_direct_plantation(course, date_iso, players, before_time=None):
             key = f"{h:02d}:{min_val:02d}"
             if key in seen:
                 continue
-            chunk = body_text[max(0, m.start() - 20):m.end() + 40]
-            slots = re.findall(r"\b([1-4])\s*(?:open|slot|available)?", chunk, re.I)
-            open_slots = int(slots[-1]) if slots else 4
-            if open_slots < players:
+            chunk = body_text[max(0, m.start() - 50):m.end() + 80]
+            open_slots = None
+            m_open = re.search(r"(?:(\d+)\s*open|open\s*(\d+)|(\d+)\s*slots?|(\d+)\s*available)", chunk, re.I)
+            if m_open:
+                open_slots = int(m_open.group(1) or m_open.group(2) or m_open.group(3) or m_open.group(4) or "0")
+            if open_slots is None:
+                slots = re.findall(r"\b([1-4])\s*(?:open|slot|available)?", chunk, re.I)
+                open_slots = int(slots[-1]) if slots else None
+            if open_slots is None or open_slots < players:
                 continue
             seen.add(key)
             time_str = f"{h % 12 or 12}:{min_val:02d}{'pm' if h >= 12 else 'am'}"
